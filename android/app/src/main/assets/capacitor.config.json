@@ -1,0 +1,15 @@
+{
+	"appId": "com.fieldvisit.tracker",
+	"appName": "FIELD VISIT TRACKER",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	},
+	"plugins": {
+		"Geolocation": {
+			"permissions": [
+				"location"
+			]
+		}
+	}
+}

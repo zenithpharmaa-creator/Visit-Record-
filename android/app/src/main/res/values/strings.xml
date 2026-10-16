@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">FIELD VISIT TRACKER</string>
+    <string name="title_activity_main">FIELD VISIT TRACKER</string>
+    <string name="package_name">com.fieldvisit.tracker</string>
+    <string name="custom_url_scheme">com.fieldvisit.tracker</string>
+</resources>

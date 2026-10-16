@@ -1,0 +1,6 @@
+{
+  "name": "FIELD VISIT TRACKER",
+  "description": "نظام احترافي لتسجيل ومتابعة الزيارات الميدانية - Offline-First + GPS + Central Sync",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

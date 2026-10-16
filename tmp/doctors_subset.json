@@ -1,0 +1,7 @@
+[
+  { "clientCode": "CLI-SNA-11", "name": "د. صابر اليوسفي", "clientType": "DOCTOR", "doctorClass": "A", "specialty": "G.P", "phone": "+967 770000000", "address": "الحثيلي", "region": "المنطقة الوسطى", "latitude": 15.33, "longitude": 44.1926, "allowedVisitRadiusMeters": 100 },
+  { "clientCode": "CLI-SNA-12", "name": "د. سلوى الغميري", "clientType": "DOCTOR", "doctorClass": "A", "specialty": "Gyno", "phone": "+967 770000000", "address": "الحي السياسي", "region": "المنطقة الوسطى", "latitude": 15.3331, "longitude": 44.1939, "allowedVisitRadiusMeters": 100 },
+  { "clientCode": "CLI-SNA-13", "name": "د. نجيبة الشرجبي٢", "clientType": "DOCTOR", "doctorClass": "A", "specialty": "Ped", "phone": "+967 770000000", "address": "الحي السياسي- أبراج المطهر", "region": "المنطقة الوسطى", "latitude": 15.3331, "longitude": 44.1939, "allowedVisitRadiusMeters": 100 },
+  { "clientCode": "CLI-SNA-14", "name": "د. لمياء الشرجبي٢", "clientType": "DOCTOR", "doctorClass": "A", "specialty": "Gyno", "phone": "+967 770000000", "address": "الحي السياسي- أبراج المطهر", "region": "المنطقة الوسطى", "latitude": 15.2844, "longitude": 44.2256, "allowedVisitRadiusMeters": 100 },
+  { "clientCode": "CLI-SNA-15", "name": "د. اشواق الصلوي٢", "clientType": "DOCTOR", "doctorClass": "B", "specialty": "Onco", "phone": "+967 770000000", "address": "برج العولقي- ش الحربي", "region": "المنطقة الوسطى", "latitude": 15.2844, "longitude": 44.2256, "allowedVisitRadiusMeters": 100 }
+]
