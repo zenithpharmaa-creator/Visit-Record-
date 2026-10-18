@@ -6,9 +6,11 @@
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import { User, Customer, Visit, SyncQueueItem, AuditLog, AppConfiguration, Region, ProductItem, Client, Pharmacy, RolePermissionsMatrix, PermissionDefinition, UserRole, DoctorClass, RegionSection, BoundaryBasis } from '../types';
+import { User, Customer, Visit, SyncQueueItem, AuditLog, AppConfiguration, Region, ProductItem, Client, Pharmacy, RolePermissionsMatrix, PermissionDefinition, UserRole, DoctorClass, RegionSection, BoundaryBasis, VerificationStatus } from '../types';
 
-const DB_FILE_PATH = path.resolve(process.cwd(), 'server_database_store.json');
+const DB_FILE_PATH = fs.existsSync('/app/applet/server_database_store.json')
+  ? '/app/applet/server_database_store.json'
+  : path.resolve(process.cwd(), 'server_database_store.json');
 
 export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   // 1. المستخدمون والمناديب
@@ -1327,6 +1329,7 @@ class ServerDatabase {
               admin.fullName = 'نجيب راصع (مدير النظام - صنعاء)';
             }
           }
+          this.syncAllClientsAndCustomers(parsed);
           this.saveToDisk(parsed);
           return parsed;
         }
@@ -1349,6 +1352,7 @@ class ServerDatabase {
       permissions: DEFAULT_PERMISSIONS_MATRIX,
     };
 
+    this.syncAllClientsAndCustomers(newStore);
     this.saveToDisk(newStore);
     return newStore;
   }
@@ -1360,6 +1364,104 @@ class ServerDatabase {
       fs.renameSync(tempPath, DB_FILE_PATH);
     } catch (err) {
       console.error('[ServerDB] Atomic save error:', err);
+    }
+  }
+
+  /**
+   * Safe bidirectional synchronization between clients (العملاء والأطباء) and customers (سجل العملاء المركزي).
+   * Ensures zero duplication, updates missing metadata, and protects all manual edits.
+   */
+  public syncAllClientsAndCustomers(data: DatabaseStore = this.store): void {
+    if (!data.clients) data.clients = [];
+    if (!data.customers) data.customers = [];
+
+    // 1. Sync every client into customers table
+    for (const client of data.clients) {
+      let existingCust = data.customers.find(
+        c => c.id === `cust_${client.id}` || 
+             (client.clientCode && c.customerCode === client.clientCode) || 
+             (client.name && c.customerName?.trim().toLowerCase() === client.name.trim().toLowerCase())
+      );
+
+      if (existingCust) {
+        existingCust.customerName = client.name || existingCust.customerName;
+        if (client.clientCode) existingCust.customerCode = client.clientCode;
+        if (client.phone) existingCust.phone = client.phone;
+        if (client.address) existingCust.address = client.address;
+        if (client.region) existingCust.region = client.region;
+        if (client.latitude !== undefined) existingCust.latitude = Number(client.latitude);
+        if (client.longitude !== undefined) existingCust.longitude = Number(client.longitude);
+        if (client.allowedVisitRadiusMeters !== undefined) existingCust.allowedVisitRadiusMeters = Number(client.allowedVisitRadiusMeters);
+        if (client.assignedRepId !== undefined) existingCust.assignedRepId = client.assignedRepId;
+        if (client.isActive !== undefined) existingCust.isActive = client.isActive;
+        if (client.specialty || client.clientType) existingCust.ownerName = client.specialty || client.clientType;
+      } else {
+        data.customers.push({
+          id: `cust_${client.id}`,
+          customerCode: client.clientCode || `0${Math.floor(10000 + Math.random() * 90000)}`,
+          customerName: client.name,
+          ownerName: client.specialty || client.clientType || '',
+          phone: client.phone || '',
+          address: client.address || '',
+          region: client.region || 'المنطقة الوسطى',
+          latitude: Number(client.latitude) || 15.3533,
+          longitude: Number(client.longitude) || 44.2045,
+          allowedVisitRadiusMeters: Number(client.allowedVisitRadiusMeters) || 100,
+          assignedRepId: client.assignedRepId || '',
+          isActive: client.isActive !== undefined ? client.isActive : true,
+          isDeleted: false,
+          createdAt: client.createdAt || new Date().toISOString(),
+          updatedAt: client.updatedAt || new Date().toISOString(),
+          version: 1,
+        });
+      }
+    }
+
+    // 2. Sync every customer into clients table
+    for (const cust of data.customers) {
+      if (cust.isDeleted) continue;
+      let existingCli = data.clients.find(
+        c => c.id === cust.id.replace('cust_', '') || 
+             (cust.customerCode && c.clientCode === cust.customerCode) || 
+             (cust.customerName && c.name?.trim().toLowerCase() === cust.customerName.trim().toLowerCase())
+      );
+
+      if (existingCli) {
+        existingCli.name = cust.customerName || existingCli.name;
+        if (cust.customerCode) existingCli.clientCode = cust.customerCode;
+        if (cust.phone) existingCli.phone = cust.phone;
+        if (cust.address) existingCli.address = cust.address;
+        if (cust.region) existingCli.region = cust.region;
+        if (cust.latitude !== undefined) existingCli.latitude = Number(cust.latitude);
+        if (cust.longitude !== undefined) existingCli.longitude = Number(cust.longitude);
+        if (cust.allowedVisitRadiusMeters !== undefined) existingCli.allowedVisitRadiusMeters = Number(cust.allowedVisitRadiusMeters);
+        if (cust.assignedRepId !== undefined) existingCli.assignedRepId = cust.assignedRepId;
+        if (cust.isActive !== undefined) existingCli.isActive = cust.isActive;
+      } else {
+        const clientType: any = cust.customerName.includes('صيدلية') 
+          ? 'DISTRIBUTOR' 
+          : cust.customerName.includes('مستشفى') 
+            ? 'HOSPITAL' 
+            : 'DOCTOR';
+        data.clients.push({
+          id: cust.id.startsWith('cust_') ? cust.id.replace('cust_', '') : `cli_${cust.id}`,
+          clientCode: cust.customerCode,
+          name: cust.customerName,
+          clientType,
+          doctorClass: 'B',
+          specialty: cust.ownerName || '',
+          phone: cust.phone || '',
+          address: cust.address || '',
+          region: cust.region || 'المنطقة الوسطى',
+          assignedRepId: cust.assignedRepId || '',
+          latitude: Number(cust.latitude) || 15.3533,
+          longitude: Number(cust.longitude) || 44.2045,
+          allowedVisitRadiusMeters: Number(cust.allowedVisitRadiusMeters) || 100,
+          isActive: cust.isActive !== undefined ? cust.isActive : true,
+          createdAt: cust.createdAt || new Date().toISOString(),
+          updatedAt: cust.updatedAt || new Date().toISOString(),
+        });
+      }
     }
   }
 
@@ -1575,21 +1677,27 @@ class ServerDatabase {
 
   public upsertCustomer(customerData: Partial<Customer> & { customerCode: string; customerName: string }, actorId: string): Customer {
     const now = new Date().toISOString();
-    let existing = this.store.customers.find(c => c.id === customerData.id || c.customerCode === customerData.customerCode);
+    let existing = this.store.customers.find(
+      c => c.id === customerData.id || 
+           c.customerCode === customerData.customerCode ||
+           (customerData.customerName && c.customerName?.trim().toLowerCase() === customerData.customerName.trim().toLowerCase())
+    );
 
+    let savedCust: Customer;
     if (existing) {
       const oldValues = { ...existing };
       existing.customerCode = String(customerData.customerCode); // Preserve leading zeros!
       if (customerData.customerName) existing.customerName = customerData.customerName;
-      if (customerData.ownerName) existing.ownerName = customerData.ownerName;
-      if (customerData.phone) existing.phone = customerData.phone;
-      if (customerData.address) existing.address = customerData.address;
-      if (customerData.region) existing.region = customerData.region;
-      if (customerData.latitude !== undefined) existing.latitude = customerData.latitude;
-      if (customerData.longitude !== undefined) existing.longitude = customerData.longitude;
-      if (customerData.allowedVisitRadiusMeters !== undefined) existing.allowedVisitRadiusMeters = customerData.allowedVisitRadiusMeters;
+      if (customerData.ownerName !== undefined) existing.ownerName = customerData.ownerName;
+      if (customerData.phone !== undefined) existing.phone = customerData.phone;
+      if (customerData.address !== undefined) existing.address = customerData.address;
+      if (customerData.region !== undefined) existing.region = customerData.region;
+      if (customerData.latitude !== undefined) existing.latitude = Number(customerData.latitude);
+      if (customerData.longitude !== undefined) existing.longitude = Number(customerData.longitude);
+      if (customerData.allowedVisitRadiusMeters !== undefined) existing.allowedVisitRadiusMeters = Number(customerData.allowedVisitRadiusMeters);
       if (customerData.assignedRepId !== undefined) existing.assignedRepId = customerData.assignedRepId;
       if (customerData.isActive !== undefined) existing.isActive = customerData.isActive;
+      if (customerData.isDeleted !== undefined) existing.isDeleted = customerData.isDeleted;
 
       existing.updatedAt = now;
       existing.version += 1;
@@ -1605,8 +1713,7 @@ class ServerDatabase {
         newValues: existing,
       });
 
-      this.saveToDisk();
-      return existing;
+      savedCust = existing;
     } else {
       const newCustomer: Customer = {
         id: customerData.id || `cust_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
@@ -1615,11 +1722,11 @@ class ServerDatabase {
         ownerName: customerData.ownerName || '',
         phone: customerData.phone || '',
         address: customerData.address || '',
-        region: customerData.region || 'القاهرة الكبرى',
-        latitude: customerData.latitude || 29.9723,
-        longitude: customerData.longitude || 31.2785,
-        allowedVisitRadiusMeters: customerData.allowedVisitRadiusMeters || 100,
-        isActive: true,
+        region: customerData.region || 'المنطقة الوسطى',
+        latitude: customerData.latitude !== undefined ? Number(customerData.latitude) : 15.3533,
+        longitude: customerData.longitude !== undefined ? Number(customerData.longitude) : 44.2045,
+        allowedVisitRadiusMeters: customerData.allowedVisitRadiusMeters !== undefined ? Number(customerData.allowedVisitRadiusMeters) : 100,
+        isActive: customerData.isActive !== undefined ? Boolean(customerData.isActive) : true,
         isDeleted: false,
         assignedRepId: customerData.assignedRepId || '',
         createdAt: now,
@@ -1639,9 +1746,88 @@ class ServerDatabase {
         newValues: newCustomer,
       });
 
-      this.saveToDisk();
-      return newCustomer;
+      savedCust = newCustomer;
     }
+
+    // Bidirectional sync to clients table
+    if (!this.store.clients) this.store.clients = [];
+    const clientMatch = this.store.clients.find(
+      c => c.id === savedCust.id.replace('cust_', '') || 
+           c.clientCode === savedCust.customerCode || 
+           (savedCust.customerName && c.name?.trim().toLowerCase() === savedCust.customerName.trim().toLowerCase())
+    );
+
+    if (clientMatch) {
+      clientMatch.name = savedCust.customerName;
+      clientMatch.clientCode = savedCust.customerCode;
+      clientMatch.phone = savedCust.phone;
+      clientMatch.address = savedCust.address;
+      clientMatch.region = savedCust.region;
+      clientMatch.latitude = savedCust.latitude;
+      clientMatch.longitude = savedCust.longitude;
+      clientMatch.allowedVisitRadiusMeters = savedCust.allowedVisitRadiusMeters;
+      clientMatch.assignedRepId = savedCust.assignedRepId;
+      clientMatch.isActive = savedCust.isActive;
+      clientMatch.updatedAt = now;
+    } else {
+      const clientType: any = savedCust.customerName.includes('صيدلية') 
+        ? 'DISTRIBUTOR' 
+        : savedCust.customerName.includes('مستشفى') 
+          ? 'HOSPITAL' 
+          : 'DOCTOR';
+      this.store.clients.push({
+        id: savedCust.id.startsWith('cust_') ? savedCust.id.replace('cust_', '') : `cli_${savedCust.id}`,
+        clientCode: savedCust.customerCode,
+        name: savedCust.customerName,
+        clientType,
+        doctorClass: 'B',
+        specialty: savedCust.ownerName || '',
+        phone: savedCust.phone || '',
+        address: savedCust.address || '',
+        region: savedCust.region || 'المنطقة الوسطى',
+        assignedRepId: savedCust.assignedRepId || '',
+        latitude: savedCust.latitude,
+        longitude: savedCust.longitude,
+        allowedVisitRadiusMeters: savedCust.allowedVisitRadiusMeters,
+        isActive: savedCust.isActive,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    this.saveToDisk();
+    return savedCust;
+  }
+
+  public deleteCustomer(id: string, actorId: string): boolean {
+    const cust = (this.store.customers || []).find(c => c.id === id || c.customerCode === id);
+    if (!cust) return false;
+    const now = new Date().toISOString();
+    cust.isDeleted = true;
+    cust.isActive = false;
+    cust.version += 1;
+    cust.updatedAt = now;
+
+    // Also remove matching client from clients list
+    const clientIdx = (this.store.clients || []).findIndex(
+      c => c.id === id.replace('cust_', '') || c.clientCode === cust.customerCode
+    );
+    if (clientIdx !== -1) {
+      this.store.clients.splice(clientIdx, 1);
+    }
+
+    this.addAuditLog({
+      userId: actorId,
+      role: 'ADMIN',
+      action: 'CUSTOMER_DELETED',
+      entityType: 'CUSTOMER',
+      entityId: cust.id,
+      timestamp: now,
+      oldValues: cust,
+    });
+
+    this.saveToDisk();
+    return true;
   }
 
   // --- Idempotent Batch Visits Sync ---
@@ -1657,6 +1843,12 @@ class ServerDatabase {
           continue;
         }
 
+        // SECURITY: Verify user identity
+        if (v.userId !== actorUserId) {
+          failedVisitIds.push(v.visitId);
+          continue;
+        }
+
         const existing = this.store.visits.find(item => item.visitId === v.visitId);
 
         if (existing) {
@@ -1666,11 +1858,48 @@ class ServerDatabase {
         }
 
         // New Visit insertion
+        const customer = this.store.customers.find(c => c.id === v.customerId);
+        let verificationStatus: VerificationStatus = 'PENDING';
+        let verificationReason: string | null = null;
+        
+        if (customer && v.startLatitude && v.startLongitude) {
+          const lat1 = v.startLatitude;
+          const lon1 = v.startLongitude;
+          const lat2 = customer.latitude;
+          const lon2 = customer.longitude;
+          
+          const R = 6371e3; // metres
+          const φ1 = lat1 * Math.PI/180;
+          const φ2 = lat2 * Math.PI/180;
+          const Δφ = (lat2-lat1) * Math.PI/180;
+          const Δλ = (lon2-lon1) * Math.PI/180;
+
+          const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                    Math.cos(φ1) * Math.cos(φ2) *
+                    Math.sin(Δλ/2) * Math.sin(Δλ/2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          const distance = R * c;
+
+          const maxRadius = customer.allowedVisitRadiusMeters || 30;
+          if (distance <= maxRadius) {
+            verificationStatus = 'ACCEPTED';
+            verificationReason = 'Within radius';
+          } else {
+            verificationStatus = 'REJECTED';
+            verificationReason = `Outside radius: ${Math.round(distance)}m`;
+          }
+        } else {
+          verificationStatus = 'REJECTED';
+          verificationReason = 'Missing location data';
+        }
+
         const serverVisit: Visit = {
           ...v,
           serverReceivedTimestamp: now,
           state: 'SYNCED',
           updatedAt: now,
+          verificationStatus,
+          verificationReason,
         };
 
         this.store.visits.push(serverVisit);
@@ -1722,7 +1951,7 @@ class ServerDatabase {
     return this.store.visits.filter(v => {
       if (filters?.userId && v.userId !== filters.userId) return false;
       if (filters?.locationStatus && v.locationStatus !== filters.locationStatus) return false;
-      if (filters?.date) {
+      if (filters?.date && filters.date !== 'all' && filters.date.trim() !== '') {
         const visitDate = (v.startTimeDevice || v.createdAt).substring(0, 10);
         if (visitDate !== filters.date) return false;
       }
@@ -2170,8 +2399,13 @@ class ServerDatabase {
 
   public upsertClient(data: Partial<Client>, actorId: string): Client {
     const now = new Date().toISOString();
-    let existing = (this.store.clients || []).find(c => c.id === data.id || (data.clientCode && c.clientCode === data.clientCode));
+    let existing = (this.store.clients || []).find(
+      c => c.id === data.id || 
+           (data.clientCode && c.clientCode === data.clientCode) ||
+           (data.name && c.name?.trim().toLowerCase() === data.name.trim().toLowerCase())
+    );
 
+    let savedClient: Client;
     if (existing) {
       const oldValues = { ...existing };
       if (data.name) existing.name = data.name;
@@ -2179,9 +2413,9 @@ class ServerDatabase {
       if (data.clientType) existing.clientType = data.clientType;
       if (data.doctorClass !== undefined) existing.doctorClass = data.doctorClass;
       if (data.specialty !== undefined) existing.specialty = data.specialty;
-      if (data.phone) existing.phone = data.phone;
-      if (data.address) existing.address = data.address;
-      if (data.region) existing.region = data.region;
+      if (data.phone !== undefined) existing.phone = data.phone;
+      if (data.address !== undefined) existing.address = data.address;
+      if (data.region !== undefined) existing.region = data.region;
       if (data.assignedRepId !== undefined) existing.assignedRepId = data.assignedRepId;
       else if ((data as any).assignedRep !== undefined) {
         const repName = (data as any).assignedRep;
@@ -2194,21 +2428,7 @@ class ServerDatabase {
       if (data.isActive !== undefined) existing.isActive = data.isActive;
       existing.updatedAt = now;
 
-      // Sync with customers table for visit tracking
-      this.upsertCustomer({
-        id: `cust_${existing.id}`,
-        customerCode: existing.clientCode,
-        customerName: existing.name,
-        ownerName: existing.specialty || existing.clientType,
-        phone: existing.phone,
-        address: existing.address,
-        region: existing.region,
-        latitude: existing.latitude,
-        longitude: existing.longitude,
-        allowedVisitRadiusMeters: existing.allowedVisitRadiusMeters,
-        assignedRepId: existing.assignedRepId,
-        isActive: existing.isActive,
-      }, actorId);
+      savedClient = existing;
 
       this.addAuditLog({
         userId: actorId,
@@ -2220,9 +2440,6 @@ class ServerDatabase {
         oldValues,
         newValues: existing,
       });
-
-      this.saveToDisk();
-      return existing;
     } else {
       const newClient: Client = {
         id: data.id || `cli_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
@@ -2245,21 +2462,7 @@ class ServerDatabase {
 
       if (!this.store.clients) this.store.clients = [];
       this.store.clients.push(newClient);
-
-      // Sync to customers table
-      this.upsertCustomer({
-        id: `cust_${newClient.id}`,
-        customerCode: newClient.clientCode,
-        customerName: newClient.name,
-        ownerName: newClient.specialty || newClient.clientType,
-        phone: newClient.phone,
-        address: newClient.address,
-        region: newClient.region,
-        latitude: newClient.latitude,
-        longitude: newClient.longitude,
-        allowedVisitRadiusMeters: newClient.allowedVisitRadiusMeters,
-        isActive: newClient.isActive,
-      }, actorId);
+      savedClient = newClient;
 
       this.addAuditLog({
         userId: actorId,
@@ -2270,16 +2473,71 @@ class ServerDatabase {
         timestamp: now,
         newValues: newClient,
       });
-
-      this.saveToDisk();
-      return newClient;
     }
+
+    // Direct synchronization to customers table (with version increment for delta sync)
+    if (!this.store.customers) this.store.customers = [];
+    let custMatch = this.store.customers.find(
+      c => c.id === `cust_${savedClient.id}` || 
+           (savedClient.clientCode && c.customerCode === savedClient.clientCode) || 
+           (savedClient.name && c.customerName?.trim().toLowerCase() === savedClient.name.trim().toLowerCase())
+    );
+
+    if (custMatch) {
+      custMatch.customerName = savedClient.name;
+      custMatch.customerCode = savedClient.clientCode;
+      custMatch.ownerName = savedClient.specialty || savedClient.clientType || custMatch.ownerName || '';
+      custMatch.phone = savedClient.phone;
+      custMatch.address = savedClient.address;
+      custMatch.region = savedClient.region;
+      custMatch.latitude = savedClient.latitude;
+      custMatch.longitude = savedClient.longitude;
+      custMatch.allowedVisitRadiusMeters = savedClient.allowedVisitRadiusMeters;
+      custMatch.assignedRepId = savedClient.assignedRepId;
+      custMatch.isActive = savedClient.isActive;
+      custMatch.updatedAt = now;
+      custMatch.version += 1;
+    } else {
+      this.store.customers.push({
+        id: `cust_${savedClient.id}`,
+        customerCode: savedClient.clientCode,
+        customerName: savedClient.name,
+        ownerName: savedClient.specialty || savedClient.clientType || '',
+        phone: savedClient.phone,
+        address: savedClient.address,
+        region: savedClient.region,
+        latitude: savedClient.latitude,
+        longitude: savedClient.longitude,
+        allowedVisitRadiusMeters: savedClient.allowedVisitRadiusMeters,
+        assignedRepId: savedClient.assignedRepId,
+        isActive: savedClient.isActive,
+        isDeleted: false,
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+      });
+    }
+
+    this.saveToDisk();
+    return savedClient;
   }
 
   public deleteClient(id: string, actorId: string): boolean {
     const idx = (this.store.clients || []).findIndex(c => c.id === id);
     if (idx === -1) return false;
     const removed = this.store.clients.splice(idx, 1)[0];
+
+    // Synchronously deactivate or mark deleted in customers table
+    const cust = (this.store.customers || []).find(
+      c => c.id === `cust_${id}` || (removed.clientCode && c.customerCode === removed.clientCode)
+    );
+    if (cust) {
+      cust.isDeleted = true;
+      cust.isActive = false;
+      cust.version += 1;
+      cust.updatedAt = new Date().toISOString();
+    }
+
     this.addAuditLog({
       userId: actorId,
       role: 'SYSTEM_ADMIN',
@@ -2289,6 +2547,7 @@ class ServerDatabase {
       timestamp: new Date().toISOString(),
       oldValues: removed,
     });
+
     this.saveToDisk();
     return true;
   }

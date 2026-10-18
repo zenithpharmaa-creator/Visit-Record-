@@ -251,7 +251,7 @@ app.get('/api/customers', authenticateToken, (req: AuthenticatedRequest, res: Re
 });
 
 app.post('/api/customers', authenticateToken, requireRoles('SYSTEM_ADMIN', 'SALES_MANAGER'), (req: AuthenticatedRequest, res: Response) => {
-  const { customerCode, customerName, ownerName, phone, address, region, latitude, longitude, allowedVisitRadiusMeters, isActive } = req.body;
+  const { customerCode, customerName, ownerName, phone, address, region, latitude, longitude, allowedVisitRadiusMeters, isActive, assignedRepId } = req.body;
 
   if (!customerCode || !customerName) {
     return res.status(400).json({ error: 'يرجى توفير كود العميل واسم العميل' });
@@ -270,6 +270,7 @@ app.post('/api/customers', authenticateToken, requireRoles('SYSTEM_ADMIN', 'SALE
       latitude: parseFloat(latitude),
       longitude: parseFloat(longitude),
       allowedVisitRadiusMeters: parseFloat(allowedVisitRadiusMeters) || 100,
+      assignedRepId: assignedRepId || '',
       isActive: isActive !== undefined ? Boolean(isActive) : true,
     },
     req.user!.id
@@ -279,6 +280,22 @@ app.post('/api/customers', authenticateToken, requireRoles('SYSTEM_ADMIN', 'SALE
     message: 'تم حفظ بيانات العميل وتحديث الإصدار المركزي بنجاح',
     customer: savedCustomer,
   });
+});
+
+app.post('/api/customers/bulk', authenticateToken, requireRoles('SYSTEM_ADMIN', 'SALES_MANAGER'), (req: AuthenticatedRequest, res: Response) => {
+  const { customers, clients } = req.body;
+  const list = customers || clients;
+  if (!Array.isArray(list)) return res.status(400).json({ error: 'قائمة العملاء غير صالحة' });
+  const result = serverDb.bulkImportClients(list, req.user!.id);
+  return res.json({
+    message: `تم استيراد ${result.total} عميل بنجاح للسجل المركزي (جديد: ${result.created}، تم التحديث: ${result.updated})`,
+    result,
+  });
+});
+
+app.delete('/api/customers/:id', authenticateToken, requireRoles('SYSTEM_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const deleted = serverDb.deleteCustomer(req.params.id, req.user!.id);
+  return res.json({ success: deleted, message: deleted ? 'تم حذف العميل بنجاح من السجل المركزي' : 'العميل غير موجود' });
 });
 
 // --- VISITS BATCH IDEMPOTENT SYNC ---

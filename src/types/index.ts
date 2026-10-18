@@ -39,7 +39,7 @@ export interface RolePermissionsMatrix {
 
 export type RegionSection = 'شمالية' | 'جنوبية' | 'وسطى';
 export type BoundaryBasis = 'TEAM_AGREEMENT' | 'CITY_GEOGRAPHY';
-export type DoctorClass = 'A' | 'B' | 'C';
+export type DoctorClass = 'A+' | 'A' | 'B' | 'C';
 
 export interface Region {
   id: string;
@@ -154,6 +154,8 @@ export type LocationStatus =
   | 'LOCATION_PENDING'
   | 'OFFLINE_SAVED_PENDING_MATCH';
 
+export type VerificationStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED';
+
 export interface Visit {
   visitId: string; // Acts as Idempotency Key
   userId: string;
@@ -192,8 +194,11 @@ export interface Visit {
   visitOutcome?: string | null;
   visitType?: string | null;
   
-  // Server timestamp
+  // Server timestamp and verification
   serverReceivedTimestamp?: string | null;
+  verificationStatus?: VerificationStatus;
+  verificationReason?: string | null;
+  
   createdAt: string;
   updatedAt: string;
 }

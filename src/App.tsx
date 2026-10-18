@@ -170,19 +170,48 @@ export default function App() {
 
           {/* Quick Demo Selectors */}
           <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 space-y-2">
-            <span className="text-[11px] text-slate-400 font-bold block">اختر حساباً تجريبياً للتسجيل المباشر:</span>
-            <div className="grid grid-cols-3 gap-1.5 text-xs">
+            <span className="text-[11px] text-slate-400 font-bold block">اختر حساباً للتسجيل السريع:</span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs">
               <button
                 type="button"
-                onClick={() => quickLoginAs('rep_hassan')}
+                onClick={() => quickLoginAs('rep_north')}
                 className={`p-2 rounded-xl border text-center transition-all ${
-                  username === 'rep_hassan'
+                  username === 'rep_north'
                     ? 'bg-cyan-950 border-cyan-500 text-cyan-300 font-bold'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Smartphone className="w-4 h-4 mx-auto mb-1" />
-                <span>مندوب (Rep)</span>
+                <Smartphone className="w-4 h-4 mx-auto mb-1 text-cyan-400" />
+                <span className="block truncate">محمد الحداد</span>
+                <span className="text-[9px] opacity-75">المندوب الشمالي</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => quickLoginAs('rep_center')}
+                className={`p-2 rounded-xl border text-center transition-all ${
+                  username === 'rep_center'
+                    ? 'bg-cyan-950 border-cyan-500 text-cyan-300 font-bold'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Smartphone className="w-4 h-4 mx-auto mb-1 text-cyan-400" />
+                <span className="block truncate">محمود الرميمة</span>
+                <span className="text-[9px] opacity-75">المندوب الأوسط</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => quickLoginAs('rep_south')}
+                className={`p-2 rounded-xl border text-center transition-all ${
+                  username === 'rep_south'
+                    ? 'bg-cyan-950 border-cyan-500 text-cyan-300 font-bold'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Smartphone className="w-4 h-4 mx-auto mb-1 text-cyan-400" />
+                <span className="block truncate">علي الشعيبي</span>
+                <span className="text-[9px] opacity-75">المندوب الجنوبي</span>
               </button>
 
               <button
@@ -194,21 +223,23 @@ export default function App() {
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Users className="w-4 h-4 mx-auto mb-1" />
-                <span>مشرف (Mgr)</span>
+                <Users className="w-4 h-4 mx-auto mb-1 text-indigo-400" />
+                <span className="block truncate">د. صادق الشامي</span>
+                <span className="text-[9px] opacity-75">مشرف المبيعات</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => quickLoginAs('admin')}
-                className={`p-2 rounded-xl border text-center transition-all ${
+                className={`p-2 rounded-xl border text-center transition-all col-span-2 sm:col-span-1 ${
                   username === 'admin'
                     ? 'bg-cyan-950 border-cyan-500 text-cyan-300 font-bold'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <Shield className="w-4 h-4 mx-auto mb-1" />
-                <span>مدير (Admin)</span>
+                <Shield className="w-4 h-4 mx-auto mb-1 text-amber-400" />
+                <span className="block truncate">نجيب راصع</span>
+                <span className="text-[9px] opacity-75">مدير النظام</span>
               </button>
             </div>
           </div>

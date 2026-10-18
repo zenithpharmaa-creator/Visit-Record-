@@ -40,7 +40,9 @@ import {
   Save,
   Check,
   Stethoscope,
-  Briefcase
+  Briefcase,
+  RotateCcw,
+  SlidersHorizontal
 } from 'lucide-react';
 import { User, Region, ProductItem, Client, Pharmacy } from '../types';
 import { ConfirmationDialog } from './ConfirmationDialog';
@@ -78,9 +80,10 @@ export const MasterDataManager: React.FC<MasterDataManagerProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [regionFilter, setRegionFilter] = useState<string>('الكل');
-  const [classFilter, setClassFilter] = useState<string>('الكل'); // 'الكل' | 'A' | 'B' | 'C'
-
+  const [classFilter, setClassFilter] = useState<string>('الكل'); // 'الكل' | 'A+' | 'A' | 'B' | 'C'
   const [clientTypeFilter, setClientTypeFilter] = useState<string>('الكل');
+  const [specialtyFilter, setSpecialtyFilter] = useState<string>('الكل');
+  const [repFilter, setRepFilter] = useState<string>('الكل');
 
   // Notifications
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
@@ -199,22 +202,123 @@ export const MasterDataManager: React.FC<MasterDataManagerProps> = ({
     });
   }, [products, searchQuery]);
 
+  // Dynamic list of available specialties derived from clients data + standards, with client counts
+  const availableSpecialties = useMemo(() => {
+    const map = new Map<string, number>();
+    clients.forEach((c) => {
+      const spec = c.specialty?.trim();
+      if (spec) {
+        map.set(spec, (map.get(spec) || 0) + 1);
+      }
+    });
+
+    const standardSpecs = [
+      'باطنية',
+      'قلب وأوعية دموية',
+      'أطفال وحديثي الولادة',
+      'عظام ومفاصل',
+      'نساء وتوليد',
+      'جراحة عامة',
+      'جلدية وتناسلية',
+      'عيون وجراحة عيون',
+      'أنف وأذن وحنجرة',
+      'مسالك بولية وتناسلية',
+      'أمراض الصدر والجهاز التنفسي',
+      'مخ وأعصاب',
+      'طب وجراحة أسنان',
+      'غدد صماء وسكري',
+      'كلى ومسالك',
+      'أورام وأمراض دم',
+      'طوارئ وعناية مركزة',
+      'طب عام'
+    ];
+
+    const result: { specialty: string; count: number }[] = [];
+    map.forEach((count, specialty) => {
+      result.push({ specialty, count });
+    });
+
+    standardSpecs.forEach((spec) => {
+      if (!map.has(spec)) {
+        result.push({ specialty: spec, count: 0 });
+      }
+    });
+
+    return result.sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.specialty.localeCompare(b.specialty, 'ar');
+    });
+  }, [clients]);
+
+  // Clients filtered by Search + Class + Type + Specialty + Rep + Region
   const filteredClients = useMemo(() => {
     return clients.filter((c) => {
+      const q = searchQuery.trim().toLowerCase();
       const matchSearch =
-        c.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.clientCode?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.specialty?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.address?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.region?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.phone?.includes(searchQuery);
+        !q ||
+        c.name?.toLowerCase().includes(q) ||
+        c.clientCode?.toLowerCase().includes(q) ||
+        c.specialty?.toLowerCase().includes(q) ||
+        c.address?.toLowerCase().includes(q) ||
+        c.region?.toLowerCase().includes(q) ||
+        c.phone?.includes(q);
+
       const matchRegion = regionFilter === 'الكل' || c.region === regionFilter;
-      const matchClass = classFilter === 'الكل' || (c.doctorClass || 'B') === classFilter;
-      const matchSection = true;
+
+      const matchClass =
+        classFilter === 'الكل' ||
+        (classFilter === 'B'
+          ? (c.doctorClass || 'B') === 'B'
+          : c.doctorClass === classFilter);
+
       const matchType = clientTypeFilter === 'الكل' || c.clientType === clientTypeFilter;
-      return matchSearch && matchRegion && matchClass && matchSection && matchType;
+
+      const matchSpecialty =
+        specialtyFilter === 'الكل' ||
+        c.specialty?.trim().toLowerCase() === specialtyFilter.trim().toLowerCase();
+
+      const matchRep =
+        repFilter === 'الكل'
+          ? true
+          : repFilter === 'UNASSIGNED'
+          ? !c.assignedRepId || c.assignedRepId.trim() === ''
+          : c.assignedRepId === repFilter;
+
+      return matchSearch && matchRegion && matchClass && matchType && matchSpecialty && matchRep;
     });
-  }, [clients, searchQuery, regionFilter, classFilter, clientTypeFilter]);
+  }, [clients, searchQuery, regionFilter, classFilter, clientTypeFilter, specialtyFilter, repFilter]);
+
+  // Helper properties to track active filters on the Clients screen
+  const hasActiveClientFilters = useMemo(() => {
+    return (
+      searchQuery.trim() !== '' ||
+      classFilter !== 'الكل' ||
+      clientTypeFilter !== 'الكل' ||
+      specialtyFilter !== 'الكل' ||
+      repFilter !== 'الكل' ||
+      regionFilter !== 'الكل'
+    );
+  }, [searchQuery, classFilter, clientTypeFilter, specialtyFilter, repFilter, regionFilter]);
+
+  const activeClientFiltersCount = useMemo(() => {
+    let count = 0;
+    if (searchQuery.trim() !== '') count++;
+    if (classFilter !== 'الكل') count++;
+    if (clientTypeFilter !== 'الكل') count++;
+    if (specialtyFilter !== 'الكل') count++;
+    if (repFilter !== 'الكل') count++;
+    if (regionFilter !== 'الكل') count++;
+    return count;
+  }, [searchQuery, classFilter, clientTypeFilter, specialtyFilter, repFilter, regionFilter]);
+
+  const handleResetClientFilters = () => {
+    setSearchQuery('');
+    setClassFilter('الكل');
+    setClientTypeFilter('الكل');
+    setSpecialtyFilter('الكل');
+    setRepFilter('الكل');
+    setRegionFilter('الكل');
+  };
 
   const filteredPharmacies = useMemo(() => {
     return pharmacies.filter((p) => {
@@ -800,59 +904,347 @@ export const MasterDataManager: React.FC<MasterDataManagerProps> = ({
       </div>
 
       {/* Search & Filter Bar */}
-      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3 flex-1 min-w-[260px]">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 absolute right-3.5 top-3 text-slate-500" />
-            <input
-              type="text"
-              placeholder={`بحث سريع في ${ENTITY_METAS[activeEntity].titleAr}...`}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-all font-mono"
-            />
+      {activeEntity === 'CLIENT' ? (
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4 shadow-sm backdrop-blur-sm">
+          {/* Top Row: Search Input + Live Match Count + Reset Filters + Refresh */}
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute right-3.5 top-3.5 text-cyan-400" />
+              <input
+                type="text"
+                placeholder="بحث سريع باسم العميل / الطبيب، الكود، التخصص، المنطقة، أو رقم الهاتف..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 focus:border-cyan-500 rounded-xl pr-10 pl-9 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none transition-all shadow-inner font-sans"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-200 p-1 rounded-md hover:bg-slate-800 transition-colors"
+                  title="مسح البحث"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 self-end md:self-auto shrink-0">
+              <div className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-slate-300 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                <span>
+                  {filteredClients.length} من {clients.length} عميل
+                </span>
+              </div>
+
+              {hasActiveClientFilters && (
+                <button
+                  type="button"
+                  onClick={handleResetClientFilters}
+                  className="px-3 py-2 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+                  title="تصفير وإعادة تعيين جميع الفلاتر"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>تصفير ({activeClientFiltersCount})</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={fetchAllData}
+                disabled={isLoading}
+                className="p-2.5 bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-400 rounded-xl transition-all"
+                title="تحديث البيانات"
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-cyan-400' : ''}`} />
+              </button>
+            </div>
           </div>
 
-
-
-          {/* Filters for CLIENT (Doctors & Hospitals) */}
-          {activeEntity === 'CLIENT' && (
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Doctor Class Filter */}
-              <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1 text-xs">
-                <span className="text-slate-400 font-bold text-[11px] whitespace-nowrap">كلاس الطبيب:</span>
-                <div className="flex items-center gap-1">
-                  {(['الكل', 'A', 'B', 'C'] as const).map((cls) => (
+          {/* Middle Row: Modern Filters Grid (5 Columns) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-2 border-t border-slate-800/80">
+            {/* 1. فلتر الكلاس (Class Filter) */}
+            <div className="bg-slate-950/70 border border-slate-800/90 rounded-xl p-2.5 flex flex-col justify-between gap-1.5">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                <span className="flex items-center gap-1">
+                  <span className="text-amber-400">★</span> كلاس الطبيب:
+                </span>
+                {classFilter !== 'الكل' && (
+                  <button
+                    type="button"
+                    onClick={() => setClassFilter('الكل')}
+                    className="text-[10px] text-cyan-400 hover:underline"
+                  >
+                    الكل
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-5 gap-1">
+                {(['الكل', 'A+', 'A', 'B', 'C'] as const).map((cls) => {
+                  const count =
+                    cls === 'الكل'
+                      ? clients.length
+                      : cls === 'A+'
+                      ? clients.filter((c) => c.doctorClass === 'A+').length
+                      : cls === 'A'
+                      ? clients.filter((c) => c.doctorClass === 'A').length
+                      : cls === 'B'
+                      ? clients.filter((c) => c.doctorClass === 'B' || !c.doctorClass).length
+                      : clients.filter((c) => c.doctorClass === 'C').length;
+                  return (
                     <button
                       key={cls}
                       type="button"
                       onClick={() => setClassFilter(cls)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                      className={`py-1.5 px-0.5 rounded-lg text-[10px] font-bold transition-all flex flex-col items-center justify-center ${
                         classFilter === cls
-                          ? cls === 'A'
-                            ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-950/40 font-extrabold'
+                          ? cls === 'A+'
+                            ? 'bg-amber-400 text-slate-950 font-black shadow-md shadow-amber-950/50'
+                            : cls === 'A'
+                            ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-950/50'
                             : cls === 'B'
-                            ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-950/40 font-extrabold'
+                            ? 'bg-cyan-500 text-slate-950 font-black shadow-md shadow-cyan-950/50'
                             : cls === 'C'
-                            ? 'bg-indigo-500 text-white shadow-md shadow-indigo-950/40 font-extrabold'
-                            : 'bg-slate-700 text-slate-100'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                            ? 'bg-indigo-500 text-white font-black shadow-md shadow-indigo-950/50'
+                            : 'bg-slate-700 text-white font-bold'
+                          : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                       }`}
                     >
-                      {cls === 'الكل' ? 'الكل' : `كلاس ${cls}`}
+                      <span>{cls === 'الكل' ? 'الكل' : cls}</span>
+                      <span className="text-[9px] opacity-75 font-mono">({count})</span>
                     </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
+            </div>
 
+            {/* 2. فلتر نوع المنشأة (Client/Facility Type Filter) */}
+            <div className="bg-slate-950/70 border border-slate-800/90 rounded-xl p-2.5 flex flex-col justify-between gap-1.5">
+              <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
+                <Building className="w-3.5 h-3.5 text-cyan-400" />
+                <span>نوع المنشأة / العميل:</span>
+              </label>
+              <select
+                value={clientTypeFilter}
+                onChange={(e) => setClientTypeFilter(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none transition-all font-sans cursor-pointer"
+              >
+                <option value="الكل">كل أنواع المنشآت ({clients.length})</option>
+                <option value="DOCTOR">أطباء وعيادات خاصة (Doctor)</option>
+                <option value="HOSPITAL">مستشفيات كبرى (Hospital)</option>
+                <option value="HEALTH_CENTER">مراكز طبية تخصصية (Center)</option>
+                <option value="CLINIC">مجمعات عيادات (Clinic)</option>
+                <option value="DISTRIBUTOR">موزعين ووكلاء (Distributor)</option>
+              </select>
+            </div>
 
+            {/* 3. فلتر التخصص الطبي (Specialty Filter) */}
+            <div className="bg-slate-950/70 border border-slate-800/90 rounded-xl p-2.5 flex flex-col justify-between gap-1.5">
+              <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
+                <Stethoscope className="w-3.5 h-3.5 text-emerald-400" />
+                <span>التخصص الطبي:</span>
+              </label>
+              <select
+                value={specialtyFilter}
+                onChange={(e) => setSpecialtyFilter(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none transition-all font-sans cursor-pointer"
+              >
+                <option value="الكل">
+                  كل التخصصات الطبية ({availableSpecialties.reduce((sum, item) => sum + item.count, 0)})
+                </option>
+                {availableSpecialties.map((item) => (
+                  <option key={item.specialty} value={item.specialty}>
+                    {item.specialty} {item.count > 0 ? `(${item.count})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              {/* Specific Region Filter */}
-              <div className="flex items-center gap-1.5">
+            {/* 4. فلتر المندوب المسؤول (Responsible Rep Filter) */}
+            <div className="bg-slate-950/70 border border-slate-800/90 rounded-xl p-2.5 flex flex-col justify-between gap-1.5">
+              <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-indigo-400" />
+                <span>المندوب المسؤول:</span>
+              </label>
+              <select
+                value={repFilter}
+                onChange={(e) => setRepFilter(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none transition-all font-sans cursor-pointer"
+              >
+                <option value="الكل">كل المناديب المسندين ({clients.length})</option>
+                <option value="UNASSIGNED">
+                  ⚠️ غير معين (بدون مندوب) ({clients.filter((c) => !c.assignedRepId).length})
+                </option>
+                {reps.map((rep) => {
+                  const count = clients.filter((c) => c.assignedRepId === rep.id).length;
+                  return (
+                    <option key={rep.id} value={rep.id}>
+                      {rep.fullName || rep.username} ({count} عميل)
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            {/* 5. فلتر المنطقة الجغرافية (Region / Territory Filter) */}
+            <div className="bg-slate-950/70 border border-slate-800/90 rounded-xl p-2.5 flex flex-col justify-between gap-1.5">
+              <label className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-purple-400" />
+                <span>المنطقة والفرع:</span>
+              </label>
+              <select
+                value={regionFilter}
+                onChange={(e) => setRegionFilter(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none transition-all font-sans cursor-pointer"
+              >
+                <option value="الكل">كل المناطق الجغرافية ({regions.length})</option>
+                {regions.map((r) => {
+                  const count = clients.filter((c) => c.region === r.name).length;
+                  return (
+                    <option key={r.id} value={r.name}>
+                      {r.name} {count > 0 ? `(${count})` : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          </div>
+
+          {/* Bottom Row: Active Filters Badges Bar */}
+          {hasActiveClientFilters && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/50 text-xs">
+              <span className="text-slate-500 text-[11px] font-bold flex items-center gap-1">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
+                <span>الفلاتر المطبقة:</span>
+              </span>
+
+              {searchQuery && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-950/80 border border-cyan-800/80 text-cyan-300 text-[11px] font-sans">
+                  <span>بحث: "{searchQuery}"</span>
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="hover:text-white p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {classFilter !== 'الكل' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-950/80 border border-amber-800/80 text-amber-300 text-[11px] font-sans">
+                  <span>كلاس {classFilter}</span>
+                  <button
+                    type="button"
+                    onClick={() => setClassFilter('الكل')}
+                    className="hover:text-white p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {clientTypeFilter !== 'الكل' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-950/80 border border-blue-800/80 text-blue-300 text-[11px] font-sans">
+                  <span>
+                    النوع:{' '}
+                    {clientTypeFilter === 'DOCTOR'
+                      ? 'أطباء وعيادات'
+                      : clientTypeFilter === 'HOSPITAL'
+                      ? 'مستشفيات'
+                      : clientTypeFilter === 'HEALTH_CENTER'
+                      ? 'مراكز طبية'
+                      : clientTypeFilter === 'CLINIC'
+                      ? 'مجمعات عيادات'
+                      : clientTypeFilter}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setClientTypeFilter('الكل')}
+                    className="hover:text-white p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {specialtyFilter !== 'الكل' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 text-[11px] font-sans">
+                  <span>التخصص: {specialtyFilter}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSpecialtyFilter('الكل')}
+                    className="hover:text-white p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {repFilter !== 'الكل' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-950/80 border border-indigo-800/80 text-indigo-300 text-[11px] font-sans">
+                  <span>
+                    المندوب:{' '}
+                    {repFilter === 'UNASSIGNED'
+                      ? 'غير معين'
+                      : reps.find((r) => r.id === repFilter)?.fullName || repFilter}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setRepFilter('الكل')}
+                    className="hover:text-white p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              {regionFilter !== 'الكل' && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-950/80 border border-purple-800/80 text-purple-300 text-[11px] font-sans">
+                  <span>المنطقة: {regionFilter}</span>
+                  <button
+                    type="button"
+                    onClick={() => setRegionFilter('الكل')}
+                    className="hover:text-white p-0.5"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={handleResetClientFilters}
+                className="text-rose-400 hover:text-rose-300 hover:underline text-[11px] font-bold mr-auto px-1 transition-colors"
+              >
+                مسح جميع الفلاتر
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Standard Search & Filter Bar for REP, REGION, PRODUCT, PHARMACY */
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3 flex-1 min-w-[260px]">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute right-3.5 top-3 text-slate-500" />
+              <input
+                type="text"
+                placeholder={`بحث سريع في ${ENTITY_METAS[activeEntity].titleAr}...`}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pr-10 pl-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 transition-all font-mono"
+              />
+            </div>
+
+            {/* Filters for REP and PHARMACY */}
+            {(activeEntity === 'REP' || activeEntity === 'PHARMACY') && (
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-slate-500" />
                 <select
                   value={regionFilter}
                   onChange={(e) => setRegionFilter(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-cyan-500 font-sans"
+                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:outline-none focus:border-cyan-500 font-mono"
                 >
                   <option value="الكل">كل المناطق</option>
                   {regions.map((r) => (
@@ -862,53 +1254,20 @@ export const MasterDataManager: React.FC<MasterDataManagerProps> = ({
                   ))}
                 </select>
               </div>
+            )}
+          </div>
 
-              {/* Client Type Filter */}
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={clientTypeFilter}
-                  onChange={(e) => setClientTypeFilter(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-cyan-500 font-sans"
-                >
-                  <option value="الكل">كل أنواع المنشآت</option>
-                  <option value="DOCTOR">أطباء وعيادات خاصة (Doctor)</option>
-                  <option value="HOSPITAL">مستشفيات كبرى (Hospital)</option>
-                  <option value="HEALTH_CENTER">مراكز طبية تخصصية (Center)</option>
-                  <option value="CLINIC">مجمعات عيادات (Clinic)</option>
-                </select>
-              </div>
-            </div>
-          )}
-
-          {/* Filters for REP and PHARMACY */}
-          {(activeEntity === 'REP' || activeEntity === 'PHARMACY') && (
-            <div className="flex items-center gap-2">
-              <Filter className="w-4 h-4 text-slate-500" />
-              <select
-                value={regionFilter}
-                onChange={(e) => setRegionFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:outline-none focus:border-cyan-500 font-mono"
-              >
-                <option value="الكل">كل المناطق</option>
-                {regions.map((r) => (
-                  <option key={r.id} value={r.name}>
-                    {r.name} ({r.section || r.governorate})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={fetchAllData}
+            disabled={isLoading}
+            className="p-2.5 bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200 rounded-xl transition-all"
+            title="تحديث البيانات"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-cyan-400' : ''}`} />
+          </button>
         </div>
-
-        <button
-          onClick={fetchAllData}
-          disabled={isLoading}
-          className="p-2.5 bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200 rounded-xl transition-all"
-          title="تحديث البيانات"
-        >
-          <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-cyan-400' : ''}`} />
-        </button>
-      </div>
+      )}
 
       {/* TABULAR DISPLAY PER ENTITY */}
 
@@ -1243,7 +1602,12 @@ export const MasterDataManager: React.FC<MasterDataManagerProps> = ({
                         <td className="p-3.5 font-bold text-cyan-400">{client.clientCode}</td>
                         <td className="p-3.5 font-sans font-bold text-slate-100">{client.name}</td>
                         <td className="p-3.5 text-center">
-                          {client.doctorClass === 'A' ? (
+                          {client.doctorClass === 'A+' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500/30 to-yellow-500/20 text-yellow-300 border border-yellow-500/60 shadow-sm shadow-amber-950/40">
+                              <span className="text-yellow-400 text-xs">★</span>
+                              <span>كلاس A+</span>
+                            </span>
+                          ) : client.doctorClass === 'A' ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500/20 to-yellow-500/10 text-amber-300 border border-amber-500/40 shadow-sm shadow-amber-950/30">
                               <span className="text-amber-400 text-xs">★</span>
                               <span>كلاس A</span>
@@ -1685,46 +2049,61 @@ export const MasterDataManager: React.FC<MasterDataManagerProps> = ({
                         الفئة الحالية: Class {editingItem.doctorClass || 'B'}
                       </span>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-4 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingItem({ ...editingItem, doctorClass: 'A+' })}
+                        className={`py-2 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
+                          editingItem.doctorClass === 'A+'
+                            ? 'bg-amber-400/25 border-amber-400 text-yellow-300 shadow-md shadow-amber-950/40 ring-1 ring-amber-400'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <span className="text-xs font-black flex items-center gap-0.5 text-yellow-300">
+                          <span>★</span> كلاس A+
+                        </span>
+                        <span className="text-[9px] text-yellow-300/80">فئة VIP</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => setEditingItem({ ...editingItem, doctorClass: 'A' })}
-                        className={`py-2 px-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
-                          (editingItem.doctorClass || 'B') === 'A'
+                        className={`py-2 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
+                          editingItem.doctorClass === 'A'
                             ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-md shadow-amber-950/40 ring-1 ring-amber-500'
                             : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                         }`}
                       >
-                        <span className="text-sm font-black flex items-center gap-1 text-amber-400">
+                        <span className="text-xs font-black flex items-center gap-0.5 text-amber-400">
                           <span>★</span> كلاس A
                         </span>
-                        <span className="text-[10px] text-amber-300/80">أولوية قصوى / صفوة</span>
+                        <span className="text-[9px] text-amber-300/80">أولوية قصوى</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setEditingItem({ ...editingItem, doctorClass: 'B' })}
-                        className={`py-2 px-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
-                          (editingItem.doctorClass || 'B') === 'B'
+                        className={`py-2 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
+                          (editingItem.doctorClass || 'B') === 'B' && editingItem.doctorClass !== 'A+' && editingItem.doctorClass !== 'A' && editingItem.doctorClass !== 'C'
                             ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 shadow-md shadow-cyan-950/40 ring-1 ring-cyan-500'
                             : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                         }`}
                       >
-                        <span className="text-sm font-black text-cyan-300">كلاس B</span>
-                        <span className="text-[10px] text-cyan-300/80">أولوية متوسطة</span>
+                        <span className="text-xs font-black text-cyan-300">كلاس B</span>
+                        <span className="text-[9px] text-cyan-300/80">متوسطة</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setEditingItem({ ...editingItem, doctorClass: 'C' })}
-                        className={`py-2 px-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
+                        className={`py-2 px-2 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition-all ${
                           editingItem.doctorClass === 'C'
                             ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300 shadow-md shadow-indigo-950/40 ring-1 ring-indigo-500'
                             : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                         }`}
                       >
-                        <span className="text-sm font-black text-indigo-300">كلاس C</span>
-                        <span className="text-[10px] text-indigo-300/80">فئة اعتيادية</span>
+                        <span className="text-xs font-black text-indigo-300">كلاس C</span>
+                        <span className="text-[9px] text-indigo-300/80">اعتيادية</span>
                       </button>
                     </div>
                   </div>

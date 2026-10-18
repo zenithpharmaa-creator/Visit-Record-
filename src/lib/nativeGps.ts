@@ -1,6 +1,6 @@
 /**
  * Native Android Location Service Helper (Capacitor Geolocation)
- * Interfaces directly with Android Location APIs & Runtime Permission Flow.
+ * Interfaces directly with Android Location APIs & Runtime Permission Flow with Zero-Tolerance for Disabled/Denied GPS.
  */
 
 import { Geolocation, PositionOptions } from '@capacitor/geolocation';
@@ -22,7 +22,7 @@ export async function requestAndGetNativeLocation(): Promise<NativeGpsPosition> 
 
   try {
     if (isNative) {
-      // 1. Check & Request Permissions on Android
+      // 1. Check & Request Permissions on Android Native
       const permResult = await Geolocation.checkPermissions();
       if (permResult.location !== 'granted') {
         const reqResult = await Geolocation.requestPermissions();
@@ -35,7 +35,7 @@ export async function requestAndGetNativeLocation(): Promise<NativeGpsPosition> 
             provider: 'android_native_denied',
             isMockLocation: false,
             permissionGranted: false,
-            errorMessage: 'تم رفض صلاحية استخدام موقع الجهاز من قبل المستخدم (Location Permission Denied).',
+            errorMessage: 'تم رفض صلاحية استخدام موقع الجهاز (GPS Permission Denied). يرجى السماح للوصول للموقع.',
           };
         }
       }
@@ -55,21 +55,22 @@ export async function requestAndGetNativeLocation(): Promise<NativeGpsPosition> 
         accuracy: Math.round((position.coords.accuracy || 0) * 10) / 10,
         timestamp: position.timestamp,
         provider: 'android_fused_location_provider',
-        isMockLocation: false, // Standard Android Geolocation API wrapper
+        isMockLocation: false,
         permissionGranted: true,
       };
     } else {
-      // Browser Geolocation Fallback for Web Preview
+      // Browser Geolocation for Web Preview - STRICT Zero-Tolerance (No silent fallbacks)
       return new Promise(resolve => {
         if (!navigator.geolocation) {
           resolve({
-            latitude: 29.9723,
-            longitude: 31.2785,
-            accuracy: 10,
+            latitude: 0,
+            longitude: 0,
+            accuracy: 0,
             timestamp: Date.now(),
-            provider: 'web_simulator_fallback',
+            provider: 'web_geolocation_unsupported',
             isMockLocation: false,
-            permissionGranted: true,
+            permissionGranted: false,
+            errorMessage: 'متصفح الويب لا يدعم خدمة تحديد الموقع (Geolocation not supported).',
           });
           return;
         }
@@ -88,31 +89,31 @@ export async function requestAndGetNativeLocation(): Promise<NativeGpsPosition> 
           },
           err => {
             resolve({
-              latitude: 29.9723, // Default fallback coordinates (Maadi / Cairo)
-              longitude: 31.2785,
-              accuracy: 15,
+              latitude: 0,
+              longitude: 0,
+              accuracy: 0,
               timestamp: Date.now(),
-              provider: 'web_fallback_default',
+              provider: 'browser_geolocation_error',
               isMockLocation: false,
               permissionGranted: false,
-              errorMessage: err.message,
+              errorMessage: err.message || 'تعذر الحصول على موقع الـ GPS. يرجى السماح بالوصول للموقع في المتصفح.',
             });
           },
-          { enableHighAccuracy: true, timeout: 8000 }
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
         );
       });
     }
   } catch (err: any) {
     console.error('[NativeGPS] Location capture error:', err);
     return {
-      latitude: 29.9723,
-      longitude: 31.2785,
-      accuracy: 20,
+      latitude: 0,
+      longitude: 0,
+      accuracy: 0,
       timestamp: Date.now(),
-      provider: 'error_fallback',
+      provider: 'error_strict_guard',
       isMockLocation: false,
       permissionGranted: false,
-      errorMessage: err.message || 'تعذر الحصول على موقع الـ GPS من النظام.',
+      errorMessage: err.message || 'تعذر تشغيل أو قراءة أداة الـ GPS من النظام.',
     };
   }
 }

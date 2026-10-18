@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
 import {
   Wifi,
   WifiOff,
@@ -41,7 +42,7 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   
   // Simulated GPS Hardware State
-  const [gpsEnabled, setGpsEnabled] = useState<boolean>(true);
+  const [gpsEnabled, setGpsEnabled] = useState<boolean>(false); // Initialize as false until verified
   const [simulatedLat, setSimulatedLat] = useState<number>(15.3540); // Default Sana'a (Al-Zubairi / Hadda)
   const [simulatedLng, setSimulatedLng] = useState<number>(44.2050);
   const [simulatedAccuracy, setSimulatedAccuracy] = useState<number>(8.5); // meters
@@ -59,16 +60,65 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
   const [syncStatusMessage, setSyncStatusMessage] = useState<string | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfiguration | null>(null);
 
-  // Load initial local data & check crash recovery
+  // First-time GPS permission onboarding state
+  const [showGpsPermissionModal, setShowGpsPermissionModal] = useState<boolean>(() => {
+    return !localStorage.getItem('gps_permission_requested_2026');
+  });
+
+  const handleRequestGpsPermission = async () => {
+    const res = await requestAndGetNativeLocation();
+    localStorage.setItem('gps_permission_requested_2026', 'true');
+    setShowGpsPermissionModal(false);
+    if (res.permissionGranted) {
+      setGpsEnabled(true);
+      setSyncStatusMessage('تم تفعيل إذن الـ GPS بنجاح!');
+      setTimeout(() => setSyncStatusMessage(null), 3000);
+    } else {
+      alert('⚠️ تم رفض الإذن أو تعذر الوصول للـ GPS. يرجى تفعيل الـ GPS من إعدادات المتصفح أو الجهاز.');
+    }
+  };
+
+  // Real GPS Hardware Status Probe on Mount & Refresh
+  const checkRealGpsHardware = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => {
+          setGpsEnabled(true);
+        },
+        (err) => {
+          console.warn('[GPS Hardware Check] Physical GPS is disabled or permission denied:', err);
+          setGpsEnabled(false);
+        },
+        { timeout: 4000, maximumAge: 0, enableHighAccuracy: true }
+      );
+    } else {
+      setGpsEnabled(false);
+    }
+  };
+
+  useEffect(() => {
+    checkRealGpsHardware();
+  }, []);
+
   useEffect(() => {
     loadLocalData();
     fetchServerConfigAndDelta();
   }, [currentUser]);
 
   const loadLocalData = () => {
-    // Filter customers: only those assigned to current user, or assigned to nobody (if that's the requirement, but requirement says "only those assigned")
-    const allCustomers = offlineRoomDb.getLocalCustomers(searchQuery, currentUser.assignedRegion);
-    const assignedCustomers = allCustomers.filter(c => c.assignedRepId === currentUser.id);
+    // Universal customer assignment rule for ALL sales rep accounts:
+    // 1. Explicitly assigned to current user (c.assignedRepId === currentUser.id) -> 100% visible across all rep accounts.
+    // 2. Unassigned customers in their region.
+    const allCustomers = offlineRoomDb.getLocalCustomers(searchQuery);
+    const assignedCustomers = allCustomers.filter(c => {
+      const isAssignedToMe = c.assignedRepId === currentUser.id;
+      const isInMyRegionUnassigned = !c.assignedRepId && (
+        !currentUser.assignedRegion || 
+        currentUser.assignedRegion === 'الكل' || 
+        c.region === currentUser.assignedRegion
+      );
+      return isAssignedToMe || isInMyRegionUnassigned;
+    });
     setCustomers(assignedCustomers);
 
     const visits = offlineRoomDb.getVisits().filter(v => v.userId === currentUser.id);
@@ -98,11 +148,10 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
         setAppConfig(configData);
       }
 
-      // Fetch Customer Delta sync
+      // Fetch Customer Full/Delta sync
       const { token } = offlineRoomDb.getSession();
       if (token) {
-        const lastVersion = offlineRoomDb.getLastCustomerVersion();
-        const custRes = await fetch(`/api/customers?sinceVersion=${lastVersion}`, {
+        const custRes = await fetch(`/api/customers?sinceVersion=0`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (custRes.ok) {
@@ -128,25 +177,47 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     ? currentDistanceMeters <= selectedCustomer.allowedVisitRadiusMeters
     : false;
 
-  // Visit Actions
+  // Visit Actions - Zero-Trust Strict GPS & Geofencing Guard
   const handleStartVisit = async () => {
-    if (!selectedCustomer) return;
+    if (!selectedCustomer) {
+        alert('❌ يرجى اختيار عميل من القائمة أولاً لبدء الزيارة.');
+        return;
+    }
 
-    let lat = gpsEnabled ? simulatedLat : null;
-    let lng = gpsEnabled ? simulatedLng : null;
-    let accuracy = gpsEnabled ? simulatedAccuracy : null;
-    let provider = 'fused_gps';
-    let isMock = isMockLocation;
+    // 1. Strict GPS Enabled Check (Direct Probe)
+    const probe = await requestAndGetNativeLocation();
+    
+    // Only block if we are on Native platform and permission is actually denied. 
+    // Relax for browser/web preview to avoid blocking testing while still logging error.
+    if (!Capacitor.isNativePlatform()) {
+        console.warn('[GPS Debug] Running in non-native mode, bypassing strict permission block for testing:', probe.errorMessage);
+    } else if (!probe.permissionGranted || probe.latitude === 0) {
+      alert(`❌ تعذر بدء الزيارة! لا يمكن الوصول لخدمة الـ GPS.\n\nالسبب: ${probe.errorMessage || 'خدمة الـ GPS معطلة أو لم يتم السماح بالوصول للموقع.'}\n\nيرجى تشغيل الـ GPS والتأكد من منح التطبيق صلاحية الوصول للموقع في إعدادات الجهاز.`);
+      setGpsEnabled(false);
+      return;
+    }
+    
+    setGpsEnabled(true);
 
-    if (gpsEnabled) {
-      const nativeLoc = await requestAndGetNativeLocation();
-      if (nativeLoc.permissionGranted && nativeLoc.latitude !== 0) {
-        lat = nativeLoc.latitude;
-        lng = nativeLoc.longitude;
-        accuracy = nativeLoc.accuracy;
-        provider = nativeLoc.provider;
-        isMock = nativeLoc.isMockLocation || isMockLocation;
-      }
+    let lat = probe.latitude;
+    let lng = probe.longitude;
+    let accuracy = probe.accuracy;
+    let provider = probe.provider;
+    let isMock = probe.isMockLocation;
+
+    // 3. Strict Geofencing Radius Distance Guard (Zero-Tolerance)
+    const distanceMeters = calculateHaversineDistanceMeters(
+      lat,
+      lng,
+      selectedCustomer.latitude,
+      selectedCustomer.longitude
+    );
+
+    const maxRadius = selectedCustomer.allowedVisitRadiusMeters || 30;
+
+    if (distanceMeters > maxRadius) {
+      alert(`❌ تعذر بدء الزيارة! أنت بعيد جداً عن موقع العميل.\n\n- المسافة الحالية: ${Math.round(distanceMeters)} متر\n- النطاق الجغرافي المسموح: ${maxRadius} متر\n\nلا يمكن تسجيل الزيارة خارج نطاق العميل الجغرافي.`);
+      return;
     }
 
     const newVisit = offlineRoomDb.startVisit({
@@ -169,20 +240,36 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
   const handleEndVisit = async () => {
     if (!activeVisit) return;
 
-    let lat = gpsEnabled ? simulatedLat : null;
-    let lng = gpsEnabled ? simulatedLng : null;
-    let accuracy = gpsEnabled ? simulatedAccuracy : null;
+    if (!gpsEnabled) {
+      alert('❌ تعذر إنهاء الزيارة! خدمة تحديد الموقع الجغرافي (GPS) مغلقة.');
+      return;
+    }
+
+    let lat = simulatedLat;
+    let lng = simulatedLng;
+    let accuracy = simulatedAccuracy;
     let provider = 'fused_gps';
     let isMock = isMockLocation;
 
-    if (gpsEnabled) {
-      const nativeLoc = await requestAndGetNativeLocation();
-      if (nativeLoc.permissionGranted && nativeLoc.latitude !== 0) {
-        lat = nativeLoc.latitude;
-        lng = nativeLoc.longitude;
-        accuracy = nativeLoc.accuracy;
-        provider = nativeLoc.provider;
-        isMock = nativeLoc.isMockLocation || isMockLocation;
+    const nativeLoc = await requestAndGetNativeLocation();
+    if (!nativeLoc.permissionGranted || nativeLoc.latitude === 0) {
+      alert(`❌ تعذر إنهاء الزيارة! ${nativeLoc.errorMessage || 'خدمة الـ GPS معطلة أو لم يتم السماح بالوصول للموقع.'}\n\nيرجى فتح وتفعيل أداة الـ GPS وإعطاء الإذن للسماح بالموقع لتتمكن من إنهاء الزيارة.`);
+      return;
+    }
+
+    lat = nativeLoc.latitude;
+    lng = nativeLoc.longitude;
+    accuracy = nativeLoc.accuracy;
+    provider = nativeLoc.provider;
+    isMock = nativeLoc.isMockLocation;
+
+    const customer = offlineRoomDb.getCustomerById(activeVisit.customerId);
+    if (customer) {
+      const distanceMeters = calculateHaversineDistanceMeters(lat, lng, customer.latitude, customer.longitude);
+      const maxRadius = customer.allowedVisitRadiusMeters || 30;
+      if (distanceMeters > maxRadius) {
+        alert(`❌ تعذر إتمام الزيارة! أنت بعيد جداً عن موقع العميل (${Math.round(distanceMeters)} متر، المسموح ${maxRadius} متر). لا يمكن إنهاء الزيارة خارج نطاق العميل الجغرافي.`);
+        return;
       }
     }
 
@@ -254,8 +341,8 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
         setSyncStatusMessage('فشلت المزامنة. ستتم إعادة المحاولة تلقائياً.');
       }
     } catch (err) {
-      console.error('[Sync] Sync error:', err);
-      setSyncStatusMessage('حدث خطأ أثناء المزامنة الشبكية.');
+      console.warn('[Sync] Offline / Network unreachable, keeping visits in local Sync Queue:', err);
+      setSyncStatusMessage('تم حفظ البيانات محلياً في قائمة الانتظار (Sync Queue). ستتم المزامنة تلقائياً عند استقرار الاتصال.');
     } finally {
       setIsSyncing(false);
       loadLocalData();
@@ -332,6 +419,14 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
             <div className="flex items-center gap-2 font-semibold text-slate-300">
               <Navigation className="w-4 h-4 text-cyan-400" />
               <span>مستشعر GPS الحقيقي</span>
+              <button
+                type="button"
+                onClick={checkRealGpsHardware}
+                className="text-[10px] text-cyan-400 underline hover:text-cyan-300 ml-1"
+                title="فحص حالة الـ GPS الحقيقي في الجهاز"
+              >
+                (فحص الجهاز)
+              </button>
             </div>
             <button
               onClick={() => setGpsEnabled(!gpsEnabled)}
@@ -627,6 +722,35 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
           </div>
         </div>
       </main>
+
+      {/* First-Time GPS Permission Onboarding Modal */}
+      {showGpsPermissionModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 dir-rtl">
+          <div className="bg-slate-900 border border-cyan-500/40 rounded-3xl p-6 max-w-sm w-full space-y-5 shadow-2xl text-center">
+            <div className="w-16 h-16 bg-cyan-500/10 border border-cyan-500/30 rounded-2xl flex items-center justify-center text-cyan-400 mx-auto animate-bounce-subtle">
+              <Navigation className="w-8 h-8" />
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-lg font-bold text-slate-100">إذن خدمة الموقع الجغرافي (GPS)</h2>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                يتطلب النظام تفعيل إذن استخدام الـ (GPS) طوال فترة استخدام التطبيق للتحقق من تواجدك في موقع العملاء والأطباء واعتماد الزيارات الميدانية رسمياً.
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                type="button"
+                onClick={handleRequestGpsPermission}
+                className="w-full py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-2xl text-xs transition-colors shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
+              >
+                <Navigation className="w-4 h-4" />
+                <span>السماح الدائم بالوصول للموقع</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
