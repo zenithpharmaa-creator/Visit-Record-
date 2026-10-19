@@ -192,7 +192,15 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     if (!Capacitor.isNativePlatform()) {
         console.warn('[GPS Debug] Running in non-native mode, bypassing strict permission block for testing:', probe.errorMessage);
     } else if (!probe.permissionGranted || probe.latitude === 0) {
-      alert(`❌ تعذر بدء الزيارة! لا يمكن الوصول لخدمة الـ GPS.\n\nالسبب: ${probe.errorMessage || 'خدمة الـ GPS معطلة أو لم يتم السماح بالوصول للموقع.'}\n\nيرجى تشغيل الـ GPS والتأكد من منح التطبيق صلاحية الوصول للموقع في إعدادات الجهاز.`);
+      let userMessage = `❌ تعذر بدء الزيارة! لا يمكن الوصول لخدمة الـ GPS.\n\nالسبب: ${probe.errorMessage || 'خطأ غير معروف.'}`;
+      
+      if (probe.errorType === 'PERMISSION_DENIED') {
+        userMessage = '❌ تم رفض إذن الوصول للموقع. يرجى تفعيل الصلاحية من إعدادات التطبيق.';
+      } else if (probe.errorType === 'TIMEOUT') {
+        userMessage = '❌ انتهت مهلة البحث عن موقعك. يرجى التأكد من تواجدك في مكان مفتوح والمحاولة مرة أخرى.';
+      }
+      
+      alert(userMessage);
       setGpsEnabled(false);
       return;
     }
@@ -240,28 +248,32 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
   const handleEndVisit = async () => {
     if (!activeVisit) return;
 
-    if (!gpsEnabled) {
-      alert('❌ تعذر إنهاء الزيارة! خدمة تحديد الموقع الجغرافي (GPS) مغلقة.');
+    // Strict GPS Enabled Check (Direct Probe)
+    const probe = await requestAndGetNativeLocation();
+    
+    if (!probe.permissionGranted || probe.latitude === 0) {
+      let userMessage = `❌ تعذر إنهاء الزيارة! لا يمكن الوصول لخدمة الـ GPS.\n\nالسبب: ${probe.errorMessage || 'خطأ غير معروف.'}`;
+      
+      if (probe.errorType === 'LOCATION_SERVICES_DISABLED') {
+        userMessage = '❌ خدمات الموقع (GPS) معطلة على جهازك. يرجى تفعيلها من إعدادات الجهاز للمتابعة.';
+      } else if (probe.errorType === 'PERMISSION_DENIED') {
+        userMessage = '❌ تم رفض إذن الوصول للموقع. يرجى تفعيل الصلاحية من إعدادات التطبيق.';
+      } else if (probe.errorType === 'TIMEOUT') {
+        userMessage = '❌ انتهت مهلة البحث عن موقعك. يرجى التأكد من تواجدك في مكان مفتوح والمحاولة مرة أخرى.';
+      }
+      
+      alert(userMessage);
+      setGpsEnabled(false);
       return;
     }
+    
+    setGpsEnabled(true);
 
-    let lat = simulatedLat;
-    let lng = simulatedLng;
-    let accuracy = simulatedAccuracy;
-    let provider = 'fused_gps';
-    let isMock = isMockLocation;
-
-    const nativeLoc = await requestAndGetNativeLocation();
-    if (!nativeLoc.permissionGranted || nativeLoc.latitude === 0) {
-      alert(`❌ تعذر إنهاء الزيارة! ${nativeLoc.errorMessage || 'خدمة الـ GPS معطلة أو لم يتم السماح بالوصول للموقع.'}\n\nيرجى فتح وتفعيل أداة الـ GPS وإعطاء الإذن للسماح بالموقع لتتمكن من إنهاء الزيارة.`);
-      return;
-    }
-
-    lat = nativeLoc.latitude;
-    lng = nativeLoc.longitude;
-    accuracy = nativeLoc.accuracy;
-    provider = nativeLoc.provider;
-    isMock = nativeLoc.isMockLocation;
+    const lat = probe.latitude;
+    const lng = probe.longitude;
+    const accuracy = probe.accuracy;
+    const provider = probe.provider;
+    const isMock = probe.isMockLocation;
 
     const customer = offlineRoomDb.getCustomerById(activeVisit.customerId);
     if (customer) {
