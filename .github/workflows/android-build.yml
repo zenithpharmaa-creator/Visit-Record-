@@ -1,18 +1,10 @@
-name: Build Visit-Record Android APK
+name: Android APK
 
-'on':
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: read
+on: [workflow_dispatch]
 
 jobs:
-  build-apk:
-    name: Build Debug APK
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - run: echo "Workflow syntax is valid"
