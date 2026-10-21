@@ -156,6 +156,25 @@ export type LocationStatus =
 
 export type VerificationStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED';
 
+export interface VisitVerificationResult {
+  visitId: string;
+  customerId: string;
+  customerName: string;
+  verificationStatus: VerificationStatus;
+  verificationReason: string;
+  distanceMeters: number | null;
+  allowedRadius: number;
+  capturedCoords: {
+    latitude: number;
+    longitude: number;
+    accuracy?: number | null;
+  };
+  savedCoords: {
+    latitude: number;
+    longitude: number;
+  };
+}
+
 export interface Visit {
   visitId: string; // Acts as Idempotency Key
   userId: string;
@@ -193,6 +212,7 @@ export interface Visit {
   notes?: string | null;
   visitOutcome?: string | null;
   visitType?: string | null;
+  visitedProducts?: string[];
   
   // Server timestamp and verification
   serverReceivedTimestamp?: string | null;

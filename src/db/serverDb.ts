@@ -6,7 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import { User, Customer, Visit, SyncQueueItem, AuditLog, AppConfiguration, Region, ProductItem, Client, Pharmacy, RolePermissionsMatrix, PermissionDefinition, UserRole, DoctorClass, RegionSection, BoundaryBasis, VerificationStatus } from '../types';
+import { User, Customer, Visit, SyncQueueItem, AuditLog, AppConfiguration, Region, ProductItem, Client, Pharmacy, RolePermissionsMatrix, PermissionDefinition, UserRole, DoctorClass, RegionSection, BoundaryBasis, VerificationStatus, VisitVerificationResult } from '../types';
 
 const DB_FILE_PATH = fs.existsSync('/app/applet/server_database_store.json')
   ? '/app/applet/server_database_store.json'
@@ -1831,10 +1831,11 @@ class ServerDatabase {
   }
 
   // --- Idempotent Batch Visits Sync ---
-  public syncVisitsBatch(visits: Visit[], actorUserId: string): { syncedVisitIds: string[]; failedVisitIds: string[] } {
+  public syncVisitsBatch(visits: Visit[], actorUserId: string): { syncedVisitIds: string[]; failedVisitIds: string[]; verificationResults: VisitVerificationResult[] } {
     const now = new Date().toISOString();
     const syncedVisitIds: string[] = [];
     const failedVisitIds: string[] = [];
+    const verificationResults: VisitVerificationResult[] = [];
 
     for (const v of visits) {
       try {
@@ -1849,25 +1850,24 @@ class ServerDatabase {
           continue;
         }
 
-        const existing = this.store.visits.find(item => item.visitId === v.visitId);
+        const customer = this.store.customers.find(c => c.id === v.customerId || c.customerCode === v.customerId);
+        const client = (this.store as any).clients?.find((c: any) => c.id === v.customerId || c.clientCode === v.customerId);
 
-        if (existing) {
-          // Already synced! Return Idempotent success without duplicating!
-          syncedVisitIds.push(v.visitId);
-          continue;
-        }
+        const targetLat = customer?.latitude ?? client?.latitude;
+        const targetLng = customer?.longitude ?? client?.longitude;
+        const targetRadius = customer?.allowedVisitRadiusMeters ?? client?.allowedVisitRadiusMeters ?? 30;
+        const targetName = customer?.customerName ?? client?.name ?? "عميل غير محدد";
 
-        // New Visit insertion
-        const customer = this.store.customers.find(c => c.id === v.customerId);
-        let verificationStatus: VerificationStatus = 'PENDING';
-        let verificationReason: string | null = null;
-        
-        if (customer && v.startLatitude && v.startLongitude) {
+        let distance: number | null = null;
+        let verificationStatus: VerificationStatus = "PENDING";
+        let verificationReason: string = "";
+
+        if (targetLat !== undefined && targetLng !== undefined && v.startLatitude && v.startLongitude) {
           const lat1 = v.startLatitude;
           const lon1 = v.startLongitude;
-          const lat2 = customer.latitude;
-          const lon2 = customer.longitude;
-          
+          const lat2 = targetLat;
+          const lon2 = targetLng;
+
           const R = 6371e3; // metres
           const φ1 = lat1 * Math.PI/180;
           const φ2 = lat2 * Math.PI/180;
@@ -1878,25 +1878,51 @@ class ServerDatabase {
                     Math.cos(φ1) * Math.cos(φ2) *
                     Math.sin(Δλ/2) * Math.sin(Δλ/2);
           const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-          const distance = R * c;
+          distance = R * c;
 
-          const maxRadius = customer.allowedVisitRadiusMeters || 30;
-          if (distance <= maxRadius) {
-            verificationStatus = 'ACCEPTED';
-            verificationReason = 'Within radius';
+          if (distance <= targetRadius) {
+            verificationStatus = "ACCEPTED";
+            verificationReason = `مطابقة صحيحة: المسافة ${Math.round(distance)} متر ضمن النطاق الجغرافي المسموح (${targetRadius} متر)`;
           } else {
-            verificationStatus = 'REJECTED';
-            verificationReason = `Outside radius: ${Math.round(distance)}m`;
+            verificationStatus = "REJECTED";
+            verificationReason = `خارج النطاق المسموح: المسافة ${Math.round(distance)} متر تتجاوز الحد المسموح (${targetRadius} متر)`;
           }
         } else {
-          verificationStatus = 'REJECTED';
-          verificationReason = 'Missing location data';
+          verificationStatus = "REJECTED";
+          verificationReason = "بيانات الإحداثيات الجغرافية مفقودة أو غير متوفرة للعميل";
+        }
+
+        const existing = this.store.visits.find(item => item.visitId === v.visitId);
+
+        if (existing) {
+          syncedVisitIds.push(v.visitId);
+          verificationResults.push({
+            visitId: v.visitId,
+            customerId: v.customerId,
+            customerName: targetName,
+            verificationStatus: existing.verificationStatus || verificationStatus,
+            verificationReason: existing.verificationReason || verificationReason,
+            distanceMeters: existing.distanceMeters ?? (distance !== null ? Math.round(distance) : null),
+            allowedRadius: targetRadius,
+            capturedCoords: {
+              latitude: v.startLatitude || existing.startLatitude || 0,
+              longitude: v.startLongitude || existing.startLongitude || 0,
+              accuracy: v.startAccuracy || existing.startAccuracy || null,
+            },
+            savedCoords: {
+              latitude: targetLat || 0,
+              longitude: targetLng || 0,
+            },
+          });
+          continue;
         }
 
         const serverVisit: Visit = {
           ...v,
+          distanceMeters: distance !== null ? Math.round(distance) : v.distanceMeters,
+          locationStatus: distance !== null ? (distance <= targetRadius ? "WITHIN_RADIUS" : "OUTSIDE_RADIUS") : v.locationStatus,
           serverReceivedTimestamp: now,
-          state: 'SYNCED',
+          state: "SYNCED",
           updatedAt: now,
           verificationStatus,
           verificationReason,
@@ -1905,16 +1931,35 @@ class ServerDatabase {
         this.store.visits.push(serverVisit);
         syncedVisitIds.push(v.visitId);
 
+        verificationResults.push({
+          visitId: v.visitId,
+          customerId: v.customerId,
+          customerName: targetName,
+          verificationStatus,
+          verificationReason,
+          distanceMeters: distance !== null ? Math.round(distance) : null,
+          allowedRadius: targetRadius,
+          capturedCoords: {
+            latitude: v.startLatitude || 0,
+            longitude: v.startLongitude || 0,
+            accuracy: v.startAccuracy || null,
+          },
+          savedCoords: {
+            latitude: targetLat || 0,
+            longitude: targetLng || 0,
+          },
+        });
+
         // Update Sync Queue entry
         const queueEntry = this.store.syncQueue.find(q => q.visitId === v.visitId);
         if (queueEntry) {
-          queueEntry.syncStatus = 'SYNCED';
+          queueEntry.syncStatus = "SYNCED";
           queueEntry.syncedAt = now;
         } else {
           this.store.syncQueue.push({
             queueId: `q_${Date.now()}_${Math.random()}`,
             visitId: v.visitId,
-            syncStatus: 'SYNCED',
+            syncStatus: "SYNCED",
             retryCount: 0,
             createdAt: v.createdAt || now,
             syncedAt: now,
@@ -1924,15 +1969,17 @@ class ServerDatabase {
         // Log Audit Event
         this.addAuditLog({
           userId: actorUserId,
-          role: 'SALES_REP',
-          action: 'VISIT_SYNCED',
-          entityType: 'VISIT',
+          role: "SALES_REP",
+          action: "VISIT_SYNCED",
+          entityType: "VISIT",
           entityId: v.visitId,
           timestamp: now,
           metadata: {
             customerId: v.customerId,
-            distanceMeters: v.distanceMeters,
-            locationStatus: v.locationStatus,
+            distanceMeters: serverVisit.distanceMeters,
+            locationStatus: serverVisit.locationStatus,
+            verificationStatus,
+            verificationReason,
             isStartMock: v.isStartMock,
             isEndMock: v.isEndMock,
           },
@@ -1944,7 +1991,7 @@ class ServerDatabase {
     }
 
     this.saveToDisk();
-    return { syncedVisitIds, failedVisitIds };
+    return { syncedVisitIds, failedVisitIds, verificationResults };
   }
 
   public getVisits(filters?: { date?: string; userId?: string; region?: string; locationStatus?: string }): Visit[] {

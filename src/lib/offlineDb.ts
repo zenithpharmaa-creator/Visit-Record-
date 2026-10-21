@@ -5,7 +5,7 @@
  */
 
 import { Preferences } from '@capacitor/preferences';
-import { Customer, Visit, SyncQueueItem, AppConfiguration, AuditLog, LocationStatus } from '../types';
+import { Customer, Visit, SyncQueueItem, AppConfiguration, AuditLog, LocationStatus, VerificationStatus } from '../types';
 import { calculateHaversineDistanceMeters, evaluateLocationStatus } from './haversine';
 import { nativeSQLiteEngine } from './sqliteEngine';
 
@@ -187,6 +187,7 @@ class OfflineRoomDatabase {
     provider?: string | null;
     isMock?: boolean;
     configThreshold?: number;
+    visitedProducts?: string[];
   }): Visit {
     const now = new Date().toISOString();
     const visitId = `vis_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -231,6 +232,7 @@ class OfflineRoomDatabase {
 
       distanceMeters,
       locationStatus,
+      visitedProducts: params.visitedProducts || [],
       createdAt: now,
       updatedAt: now,
     };
@@ -276,6 +278,7 @@ class OfflineRoomDatabase {
     notes?: string;
     visitOutcome?: string;
     visitType?: string;
+    visitedProducts?: string[];
   }): Visit {
     const visit = this.memoryCache.visits.find(v => v.visitId === params.visitId);
     if (!visit) throw new Error(`Visit ${params.visitId} not found`);
@@ -291,6 +294,7 @@ class OfflineRoomDatabase {
     visit.notes = params.notes;
     visit.visitOutcome = params.visitOutcome;
     visit.visitType = params.visitType;
+    visit.visitedProducts = params.visitedProducts;
 
     // Calculate duration in seconds
     const startMs = new Date(visit.startTimeDevice).getTime();
@@ -357,11 +361,27 @@ class OfflineRoomDatabase {
     }
   }
 
-  public async markVisitsSynced(syncedVisitIds: string[]): Promise<void> {
+  public async markVisitsSynced(
+    syncedVisitIds: string[],
+    verificationResults?: Array<{ visitId: string; verificationStatus: VerificationStatus; verificationReason?: string | null }>
+  ): Promise<void> {
     const now = new Date().toISOString();
+    const verMap = new Map<string, { status: VerificationStatus; reason?: string | null }>();
+    if (verificationResults) {
+      for (const item of verificationResults) {
+        verMap.set(item.visitId, { status: item.verificationStatus, reason: item.verificationReason });
+      }
+    }
+
     for (const id of syncedVisitIds) {
       const visit = this.memoryCache.visits.find(v => v.visitId === id);
-      if (visit) visit.state = 'SYNCED';
+      if (visit) {
+        visit.state = 'SYNCED';
+        if (verMap.has(id)) {
+          visit.verificationStatus = verMap.get(id)!.status;
+          visit.verificationReason = verMap.get(id)!.reason;
+        }
+      }
 
       const queueItem = this.memoryCache.syncQueue.find(q => q.visitId === id);
       if (queueItem) {

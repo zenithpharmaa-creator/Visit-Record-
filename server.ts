@@ -9,6 +9,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { serverDb, PERMISSION_DEFINITIONS } from './src/db/serverDb.js';
 import { UserRole } from './src/types/index.js';
@@ -311,6 +312,7 @@ app.post('/api/visits/sync', authenticateToken, (req: AuthenticatedRequest, res:
   return res.json({
     syncedVisitIds: result.syncedVisitIds,
     failedVisitIds: result.failedVisitIds,
+    verificationResults: result.verificationResults,
     serverReceivedTimestamp: new Date().toISOString(),
   });
 });
@@ -654,6 +656,23 @@ app.get('/api/reports/daily', authenticateToken, requireRoles('SYSTEM_ADMIN', 'S
     },
     visits,
   });
+});
+
+// --- ANDROID APK DIRECT DOWNLOAD ROUTE ---
+app.get(['/download/app.apk', '/download/FIELD-VISIT-TRACKER.apk', '/api/download/apk'], (req: Request, res: Response) => {
+  const possiblePaths = [
+    path.resolve(process.cwd(), 'android/app/build/outputs/apk/debug/app-debug.apk'),
+    path.resolve(process.cwd(), 'public/download/FIELD-VISIT-TRACKER.apk'),
+    path.resolve(process.cwd(), 'dist/download/FIELD-VISIT-TRACKER.apk'),
+  ];
+  for (const apkPath of possiblePaths) {
+    if (fs.existsSync(apkPath)) {
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="FIELD-VISIT-TRACKER.apk"');
+      return res.sendFile(apkPath);
+    }
+  }
+  return res.status(404).json({ error: 'ملف الـ APK قيد الإنشاء أو غير متوفر حالياً.' });
 });
 
 // --- VITE FRONTEND MIDDLEWARE INTEGRATION ---

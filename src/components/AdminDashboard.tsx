@@ -273,6 +273,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onL
 
       // 3. GPS Status Filter
       if (visitGpsFilter !== 'الكل') {
+        if (visitGpsFilter === 'ACCEPTED' && v.verificationStatus !== 'ACCEPTED') return false;
+        if (visitGpsFilter === 'REJECTED' && v.verificationStatus !== 'REJECTED') return false;
         if (visitGpsFilter === 'WITHIN_RADIUS' && v.locationStatus !== 'WITHIN_RADIUS') return false;
         if (visitGpsFilter === 'OUTSIDE_RADIUS' && v.locationStatus === 'WITHIN_RADIUS') return false;
         if (visitGpsFilter === 'MOCK' && !v.isStartMock && !v.isEndMock) return false;
@@ -999,7 +1001,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onL
                     className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none transition-all font-sans cursor-pointer"
                   >
                     <option value="الكل">كل الحالات الجغرافية</option>
-                    <option value="WITHIN_RADIUS">✅ مطابق للنطاق (Within Radius)</option>
+                    <option value="ACCEPTED">✅ مقبولة (مطابقة للإحداثيات)</option>
+                    <option value="REJECTED">❌ مرفوضة (خارج النطاق)</option>
+                    <option value="WITHIN_RADIUS">📍 داخل النطاق (Within Radius)</option>
                     <option value="OUTSIDE_RADIUS">⚠️ خارج النطاق (Outside Radius)</option>
                     <option value="MOCK">🚨 إنذار تزييف (Mock GPS)</option>
                   </select>
@@ -1080,6 +1084,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onL
                       <th className="p-3.5">نوع ونمط الزيارة</th>
                       <th className="p-3.5">النتيجة</th>
                       <th className="p-3.5">توثيق GPS والمسافة</th>
+                      <th className="p-3.5 text-center">المطابقة والقبول</th>
                       <th className="p-3.5">الملاحظات</th>
                       <th className="p-3.5 text-center">تفاصيل الزيارة</th>
                     </tr>
@@ -1087,7 +1092,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onL
                   <tbody className="divide-y divide-slate-800/60 font-sans text-slate-300">
                     {filteredAllVisits.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="p-10 text-center text-slate-500">
+                        <td colSpan={10} className="p-10 text-center text-slate-500">
                           لا توجد سجلات زيارات تطابق معايير الفلترة المحددة.
                         </td>
                       </tr>
@@ -1193,6 +1198,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onL
                                   </span>
                                 )}
                               </div>
+                            </td>
+
+                            <td className="p-3.5 text-center">
+                              {v.verificationStatus === 'ACCEPTED' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm" title={v.verificationReason || 'مطابقة صحيحة'}>
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                  <span>مقبولة ✅</span>
+                                </span>
+                              ) : v.verificationStatus === 'REJECTED' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm" title={v.verificationReason || 'خارج النطاق'}>
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>مرفوضة ❌</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700">
+                                  <span>قيد الفحص</span>
+                                </span>
+                              )}
                             </td>
 
                             <td className="p-3.5 max-w-xs">
@@ -1311,9 +1334,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onL
                         </div>
                       </div>
 
-                      {/* Coordinates */}
-                      <div className="pt-2 border-t border-slate-800/80 text-[11px] text-slate-400 font-mono">
-                        إحداثيات المندوب الفعلية: {selectedVisitDetail.startLatitude}, {selectedVisitDetail.startLongitude}
+                      {/* Coordinates & Verification Report */}
+                      <div className="pt-2 border-t border-slate-800/80 space-y-1.5 text-[11px] font-sans">
+                        <div className="flex items-center justify-between font-mono">
+                          <span className="text-slate-400">إحداثيات المندوب المسجلة وقت الزيارة:</span>
+                          <span className="text-cyan-400 font-bold">{selectedVisitDetail.startLatitude ? `${selectedVisitDetail.startLatitude.toFixed(5)}, ${selectedVisitDetail.startLongitude?.toFixed(5)}` : '-'}</span>
+                        </div>
+                        <div className="flex items-center justify-between font-mono">
+                          <span className="text-slate-400">إحداثيات العميل المسجلة في النظام:</span>
+                          <span className="text-amber-400 font-bold">{cust?.latitude ? `${cust.latitude.toFixed(5)}, ${cust.longitude.toFixed(5)}` : '-'}</span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-slate-400 font-bold">تقرير المطابقة والاعتماد:</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                            selectedVisitDetail.verificationStatus === 'ACCEPTED'
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                              : selectedVisitDetail.verificationStatus === 'REJECTED'
+                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {selectedVisitDetail.verificationStatus === 'ACCEPTED' ? 'مقبولة ✅' : selectedVisitDetail.verificationStatus === 'REJECTED' ? 'مرفوضة ❌' : 'قيد المراجعة'}
+                          </span>
+                        </div>
+                        {selectedVisitDetail.verificationReason && (
+                          <div className={`p-2 rounded-lg text-[11px] leading-relaxed ${
+                            selectedVisitDetail.verificationStatus === 'ACCEPTED'
+                              ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-900/50'
+                              : 'bg-rose-950/40 text-rose-300 border border-rose-900/50'
+                          }`}>
+                            {selectedVisitDetail.verificationReason}
+                          </div>
+                        )}
                       </div>
                     </div>
 
