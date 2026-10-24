@@ -22,7 +22,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Setup Java 21
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -48,7 +48,7 @@ jobs:
       - name: Configure Android SDK
         run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
-      - name: Build Debug APK
+      - name: Build APK
         run: |
           chmod +x android/gradlew
           cd android
