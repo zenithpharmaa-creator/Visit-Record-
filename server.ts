@@ -240,8 +240,9 @@ app.get('/api/customers', authenticateToken, (req: AuthenticatedRequest, res: Re
   const sinceVersion = parseInt((req.query.sinceVersion as string) || '0', 10);
   const region = (req.query.region as string) || req.user?.assignedRegion;
   const repId = req.user?.role === 'SALES_REP' ? req.user.id : undefined;
+  const user = req.user ? serverDb.getUserById(req.user.id) : undefined;
 
-  const customers = serverDb.getCustomersDelta(sinceVersion, region, repId);
+  const customers = serverDb.getCustomersDelta(sinceVersion, region, repId, user);
   const currentMaxVersion = Math.max(0, ...customers.map(c => c.version));
 
   return res.json({
@@ -527,12 +528,12 @@ app.post('/api/products/bulk', authenticateToken, requireRoles('SYSTEM_ADMIN', '
 app.get('/api/clients', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   const region = req.query.region as string;
   const doctorClass = req.query.doctorClass as string;
-  const regionSection = req.query.regionSection as string;
   let repId = req.query.repId as string;
   if (!repId && req.user?.role === 'SALES_REP') {
     repId = req.user.id;
   }
-  const clients = serverDb.getAllClients(region, repId, doctorClass);
+  const user = req.user ? serverDb.getUserById(req.user.id) : undefined;
+  const clients = serverDb.getAllClients(region, repId, doctorClass, user);
   return res.json({ clients });
 });
 
@@ -574,7 +575,8 @@ app.get('/api/pharmacies', authenticateToken, (req: Request, res: Response) => {
   if (!repId && authenticatedReq.user?.role === 'SALES_REP') {
     repId = authenticatedReq.user.id;
   }
-  const pharmacies = serverDb.getAllPharmacies(region, repId);
+  const user = authenticatedReq.user ? serverDb.getUserById(authenticatedReq.user.id) : undefined;
+  const pharmacies = serverDb.getAllPharmacies(region, repId, user);
   return res.json({ pharmacies });
 });
 

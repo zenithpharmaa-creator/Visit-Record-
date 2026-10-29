@@ -28,7 +28,7 @@ import {
   Check,
   X
 } from 'lucide-react';
-import { Customer, Visit, LocationStatus, AppConfiguration, VisitVerificationResult } from '../types';
+import { Customer, Visit, LocationStatus, VerificationStatus, AppConfiguration, VisitVerificationResult, isRepAssignedToCustomer, isRegionMatch } from '../types';
 import { offlineRoomDb } from '../lib/offlineDb';
 import { calculateHaversineDistanceMeters } from '../lib/haversine';
 import { requestAndGetNativeLocation } from '../lib/nativeGps';
@@ -55,13 +55,14 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [customerFilterTab, setCustomerFilterTab] = useState<'ALL' | 'ASSIGNED_ONLY' | 'TERRITORY'>('ALL');
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   
-  // Simulated GPS Hardware State
-  const [gpsEnabled, setGpsEnabled] = useState<boolean>(true); // Active by default for smooth field/preview work
-  const [simulatedLat, setSimulatedLat] = useState<number>(15.3540); // Default Sana'a (Al-Zubairi / Hadda)
-  const [simulatedLng, setSimulatedLng] = useState<number>(44.2050);
-  const [simulatedAccuracy, setSimulatedAccuracy] = useState<number>(8.5); // meters
+  // Real Native GPS Hardware State
+  const [gpsReady, setGpsReady] = useState<boolean>(true);
+  const [currentLiveLat, setCurrentLiveLat] = useState<number>(15.3540); // Default Sana'a
+  const [currentLiveLng, setCurrentLiveLng] = useState<number>(44.2050);
+  const [currentLiveAccuracy, setCurrentLiveAccuracy] = useState<number>(8.5); // meters
   const [isMockLocation, setIsMockLocation] = useState<boolean>(false);
 
   // Active & Today's Visits State
@@ -130,14 +131,6 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
       customerCoords?: { lat: number; lng: number };
       customerName?: string;
     };
-    allowOfflineOverride?: boolean;
-    pendingOfflineParams?: {
-      lat: number;
-      lng: number;
-      accuracy: number;
-      provider: string;
-      isMock: boolean;
-    };
   } | null>(null);
   const [isProcessingVisit, setIsProcessingVisit] = useState<boolean>(false);
 
@@ -151,13 +144,14 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     localStorage.setItem('gps_permission_requested_2026', 'true');
     setShowGpsPermissionModal(false);
     if (res.permissionGranted && res.servicesEnabled && res.latitude !== 0) {
-      setGpsEnabled(true);
-      setSimulatedLat(res.latitude);
-      setSimulatedLng(res.longitude);
-      setSimulatedAccuracy(res.accuracy || 5);
-      setSyncStatusMessage('تم تفعيل إذن الـ GPS والتقاط إشارة الموقع بنجاح!');
+      setGpsReady(true);
+      setCurrentLiveLat(res.latitude);
+      setCurrentLiveLng(res.longitude);
+      setCurrentLiveAccuracy(res.accuracy || 5);
+      setSyncStatusMessage('تم تفعيل إذن الـ GPS والتقاط إشارة الموقع الحقيقي بنجاح!');
       setTimeout(() => setSyncStatusMessage(null), 3000);
     } else {
+      setGpsReady(false);
       setVisitProblem({
         title: 'تعذر الوصول لخدمة الـ GPS',
         reason: res.errorMessage || 'خدمات الموقع معطلة أو تم رفض الإذن من المتصفح/الجهاز.',
@@ -172,15 +166,15 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     try {
       const probe = await requestAndGetNativeLocation();
       if (probe.permissionGranted && probe.servicesEnabled && probe.latitude !== 0) {
-        setGpsEnabled(true);
-        setSimulatedLat(probe.latitude);
-        setSimulatedLng(probe.longitude);
-        setSimulatedAccuracy(probe.accuracy || 5);
+        setGpsReady(true);
+        setCurrentLiveLat(probe.latitude);
+        setCurrentLiveLng(probe.longitude);
+        setCurrentLiveAccuracy(probe.accuracy || 5);
       } else {
-        setGpsEnabled(false);
+        setGpsReady(false);
       }
     } catch (e) {
-      setGpsEnabled(false);
+      setGpsReady(false);
     }
   };
 
@@ -189,25 +183,25 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
   }, []);
 
   useEffect(() => {
-    loadLocalData();
+    loadLocalData(searchQuery, customerFilterTab);
     fetchServerConfigAndDelta();
-  }, [currentUser]);
+  }, [currentUser, customerFilterTab]);
 
-  const loadLocalData = () => {
+  const loadLocalData = (query: string = searchQuery, filterTab: 'ALL' | 'ASSIGNED_ONLY' | 'TERRITORY' = customerFilterTab) => {
     // Universal customer assignment rule for ALL sales rep accounts:
-    // 1. Explicitly assigned to current user (c.assignedRepId === currentUser.id) -> 100% visible across all rep accounts.
-    // 2. Unassigned customers in their region.
-    const allCustomers = offlineRoomDb.getLocalCustomers(searchQuery);
-    const assignedCustomers = allCustomers.filter(c => {
-      const isAssignedToMe = c.assignedRepId === currentUser.id;
-      const isInMyRegionUnassigned = !c.assignedRepId && (
-        !currentUser.assignedRegion || 
-        currentUser.assignedRegion === 'الكل' || 
-        c.region === currentUser.assignedRegion
-      );
+    // 1. Explicitly assigned to current user -> 100% visible across all rep accounts.
+    // 2. Unassigned customers in their territory.
+    const allCustomers = offlineRoomDb.getLocalCustomers(query);
+    const repCustomers = allCustomers.filter(c => {
+      const isAssignedToMe = isRepAssignedToCustomer(c.assignedRepId, currentUser);
+      const isUnassigned = !c.assignedRepId || c.assignedRepId.trim() === '';
+      const isInMyRegionUnassigned = isUnassigned && isRegionMatch(c.region, currentUser.assignedRegion, currentUser.assignedRegionIds);
+
+      if (filterTab === 'ASSIGNED_ONLY') return isAssignedToMe;
+      if (filterTab === 'TERRITORY') return isInMyRegionUnassigned;
       return isAssignedToMe || isInMyRegionUnassigned;
     });
-    setCustomers(assignedCustomers);
+    setCustomers(repCustomers);
 
     const visits = offlineRoomDb.getVisits().filter(v => v.userId === currentUser.id);
     setTodaysVisits(visits);
@@ -239,7 +233,10 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
       // Fetch Customer Full/Delta sync
       const { token } = offlineRoomDb.getSession();
       if (token) {
-        const custRes = await fetch(`/api/customers?sinceVersion=0`, {
+        // If local customers empty, force full sync with sinceVersion=0
+        const localCount = offlineRoomDb.getLocalCustomers().length;
+        const sinceVer = localCount === 0 ? 0 : offlineRoomDb.getLastCustomerVersion();
+        const custRes = await fetch(`/api/customers?sinceVersion=${sinceVer}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (custRes.ok) {
@@ -255,63 +252,15 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     }
   };
 
-  // Live GPS Distance calculation
-  const currentDistanceMeters = selectedCustomer && gpsEnabled
-    ? calculateHaversineDistanceMeters(simulatedLat, simulatedLng, selectedCustomer.latitude, selectedCustomer.longitude)
+  // Live GPS Distance calculation against selected customer
+  const currentDistanceMeters = selectedCustomer && currentLiveLat && currentLiveLng
+    ? calculateHaversineDistanceMeters(currentLiveLat, currentLiveLng, selectedCustomer.latitude, selectedCustomer.longitude)
     : null;
 
   const threshold = appConfig?.gpsAccuracyThresholdMeters || 30;
   const isWithinRadius = selectedCustomer && currentDistanceMeters !== null
-    ? currentDistanceMeters <= selectedCustomer.allowedVisitRadiusMeters
+    ? currentDistanceMeters <= (selectedCustomer.allowedVisitRadiusMeters || 100)
     : false;
-
-  // Helper to execute start visit after checks or user override
-  const executeStartVisit = (lat: number, lng: number, accuracy: number, provider: string, isMock: boolean) => {
-    if (!selectedCustomer) return;
-    const newVisit = offlineRoomDb.startVisit({
-      userId: currentUser.id,
-      customer: selectedCustomer,
-      deviceInstallationId: 'android_device_rep_app_2026',
-      lat,
-      lng,
-      accuracy,
-      provider,
-      isMock,
-      configThreshold: threshold,
-      visitedProducts: visitedProducts,
-    });
-
-    setActiveVisit(newVisit);
-    setNotes('');
-    loadLocalData();
-    setVisitProblem(null);
-  };
-
-  // Visit Actions - Zero-Trust Strict GPS & Geofencing Guard
-  const executeEndVisitWithParams = (lat: number, lng: number, accuracy: number, provider: string, isMock: boolean) => {
-    if (!activeVisit) return;
-    offlineRoomDb.endVisit({
-      visitId: activeVisit.visitId,
-      lat,
-      lng,
-      accuracy,
-      provider,
-      isMock,
-      notes,
-      visitOutcome: selectedOutcome,
-      visitType: selectedType,
-      visitedProducts: visitedProducts,
-    });
-    setActiveVisit(null);
-    setSelectedCustomer(null);
-    setNotes('');
-    setVisitedProducts([]);
-    setVisitProblem(null);
-    loadLocalData();
-    if (isOnline) {
-      triggerSync();
-    }
-  };
 
   const handleStartVisit = async () => {
     if (!selectedCustomer) {
@@ -328,128 +277,111 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     setVisitProblem(null);
 
     try {
-      // Direct hardware GPS inquiry (Native Android + Web/iPad Geolocation)
+      // 1. تسجيل الموقع الحقيقي في نفس وقت إضافة الزيارة مباشرة من مستشعر الـ GPS
       const probe = await requestAndGetNativeLocation();
       if (!probe.permissionGranted || !probe.servicesEnabled || probe.latitude === 0) {
-        setGpsEnabled(false);
-        let title = 'تعذر الوصول لخدمة الـ GPS';
-        let reason = probe.errorMessage || 'خدمة الـ GPS معطلة أو لم يتم منح الصلاحية للتطبيق.';
-        let solution = 'يرجى التأكد من تشغيل الـ GPS من شريط الإعدادات بالجهاز ومنح الصلاحية للمتصفح/التطبيق.';
-        let type: 'GPS_DISABLED' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'LOCATION_SERVICES_DISABLED' | 'DISTANCE_EXCEEDED' | 'NO_CUSTOMER' | 'ERROR' = 'GPS_DISABLED';
+        setGpsReady(false);
+        let title = 'تعذر الوصول لمستشعر الـ GPS';
+        let reason = probe.errorMessage || 'خدمات الموقع الجغرافي معطلة في الجهاز أو لم يتم منح الصلاحية.';
+        let solution = 'يرجى تشغيل الـ GPS من شريط إعدادات جهازك والتأكد من منح التطبيق صلاحية الموقع ثم الضغط على (إعادة فحص الـ GPS والمحاولة الآن).';
+        let type: 'GPS_DISABLED' | 'PERMISSION_DENIED' | 'TIMEOUT' | 'LOCATION_SERVICES_DISABLED' | 'ERROR' = 'GPS_DISABLED';
 
         if (probe.errorType === 'PERMISSION_DENIED') {
           title = 'صلاحية الموقع مرفوضة';
           reason = 'تم حظر أو رفض إذن الوصول للموقع الجغرافي من إعدادات المتصفح أو الجهاز.';
-          solution = 'انقر على أيقونة القفل أو الموقع بجانب شريط العنوان واختر (سماح)، أو فعل الإذن من إعدادات التطبيق.';
+          solution = 'يرجى فتح إعدادات الموقع ومنح الإذن للتطبيق ثم المحاولة مجدداً.';
           type = 'PERMISSION_DENIED';
         } else if (probe.errorType === 'LOCATION_SERVICES_DISABLED') {
-          title = 'خدمات الموقع (GPS) مغلقة بالجهاز';
-          reason = 'مستشعر الـ GPS وخدمات الموقع مغلقة حالياً في إعدادات جهازك.';
-          solution = 'اسحب شريط الإشعارات العلوي من أعلى الشاشة واضغط على أيقونة (الموقع / GPS) لتشغيلها ثم أعد المحاولة.';
+          title = 'خدمات الـ GPS مغلقة بالجهاز';
+          reason = 'مستشعر الـ GPS مغلق حالياً في إعدادات جهازك.';
+          solution = 'اسحب شريط الإشعارات العلوي واضغط على أيقونة (الموقع / GPS) لتشغيلها ثم أعد المحاولة.';
           type = 'LOCATION_SERVICES_DISABLED';
         } else if (probe.errorType === 'TIMEOUT') {
           title = 'انتهت مهلة استجابة الـ GPS';
-          reason = 'استغرق مستشعر الـ GPS وقتاً طويلاً دون استقبال إشارة موقع دقيقة.';
-          solution = 'تأكد من تواجدك في مكان مفتوح وتشغيل الموقع ثم انقر على (إعادة فحص الـ GPS والمحاولة).';
+          reason = 'استغرق مستشعر الـ GPS وقتاً طويلاً دون التقاط إشارة موقع مؤكدة.';
+          solution = 'يرجى التواجد في مكان مفتوح والضغط على (إعادة فحص الـ GPS والمحاولة الآن).';
           type = 'TIMEOUT';
         }
-
-        const fallbackLat = probe.latitude !== 0 ? probe.latitude : selectedCustomer.latitude;
-        const fallbackLng = probe.longitude !== 0 ? probe.longitude : selectedCustomer.longitude;
 
         setVisitProblem({
           title,
           reason,
-          solution: solution + ' (يمكنك النقر على زر بدء الزيارة يدوياً أدناه إذا كنت متأكداً من تواجدك في عيادة الطبيب).',
+          solution,
           type,
-          allowOfflineOverride: true,
-          pendingOfflineParams: {
-            lat: fallbackLat,
-            lng: fallbackLng,
-            accuracy: probe.accuracy || 15,
-            provider: probe.latitude !== 0 ? probe.provider : 'manual_clinic_override',
-            isMock: false,
-          },
           details: {
             customerName: selectedCustomer.customerName,
             customerCoords: { lat: selectedCustomer.latitude, lng: selectedCustomer.longitude },
-            maxRadius: selectedCustomer.allowedVisitRadiusMeters || 30,
+            maxRadius: selectedCustomer.allowedVisitRadiusMeters || 100,
           },
         });
         return;
       }
 
-      setGpsEnabled(true);
+      setGpsReady(true);
       const lat = probe.latitude;
       const lng = probe.longitude;
       const accuracy = probe.accuracy;
       const provider = probe.provider;
       const isMock = probe.isMockLocation;
 
-      setSimulatedLat(lat);
-      setSimulatedLng(lng);
-      setSimulatedAccuracy(accuracy);
+      setCurrentLiveLat(lat);
+      setCurrentLiveLng(lng);
+      setCurrentLiveAccuracy(accuracy);
 
-      // Strict Geofencing Radius Distance Guard (Zero-Tolerance)
+      // 2. مطابقة الإحداثيات الحقيقية الملتقطة مع إحداثيات العميل المحفوظة في التطبيق
+      const customerLat = selectedCustomer.latitude;
+      const customerLng = selectedCustomer.longitude;
+      const allowedRadius = selectedCustomer.allowedVisitRadiusMeters || 100;
+
       const distanceMeters = calculateHaversineDistanceMeters(
         lat,
         lng,
-        selectedCustomer.latitude,
-        selectedCustomer.longitude
+        customerLat,
+        customerLng
       );
 
-      const maxRadius = selectedCustomer.allowedVisitRadiusMeters || 30;
+      // 3. تحديد إمكانية مطابقة الزيارة جغرافياً من عدمه
+      const isMatched = distanceMeters <= allowedRadius;
+      const locationStatus: LocationStatus = isMatched ? 'WITHIN_RADIUS' : 'OUTSIDE_RADIUS';
+      const verificationStatus: VerificationStatus = isMatched ? 'ACCEPTED' : 'REJECTED';
+      const verificationReason = isMatched
+        ? `مطابقة جغرافية صحيحة: المسافة الميدانية (${Math.round(distanceMeters)} متر) تقع ضمن النطاق المعتمد (${allowedRadius} متر)`
+        : `خارج النطاق المسموح: المسافة الميدانية (${Math.round(distanceMeters)} متر) تتجاوز النطاق المعتمد (${allowedRadius} متر)`;
 
-      if (distanceMeters > maxRadius) {
-        if (true) { // Corrected logic flow
-          // Offline visit capture with user confirmation modal (now also allows online override with a flag)
-          if (selectedCustomer) {
-            setVisitProblem({
-              title: 'تنبيه الموقع الجغرافي',
-              reason: `المسافة الفعلية بينك وبين العميل (${Math.round(distanceMeters)} متر)، بينما النطاق الجغرافي المسموح به هو (${maxRadius} متر فقط).`,
-              solution: 'إذا كنت متأكداً من تواجدك في موقع العميل، يمكنك بدء الزيارة مع العلم أنه سيتم تعليم هذه الزيارة للمراجعة الإدارية لتصحيح إحداثيات العميل.',
-              type: 'DISTANCE_EXCEEDED',
-              allowOfflineOverride: true,
-              pendingOfflineParams: { lat, lng, accuracy, provider, isMock },
-              details: {
-                distanceMeters: Math.round(distanceMeters),
-                maxRadius,
-                currentCoords: { lat, lng },
-                customerCoords: { lat: selectedCustomer.latitude, lng: selectedCustomer.longitude },
-                customerName: selectedCustomer.customerName,
-              },
-            });
-          }
-          return;
-        } else {
-          // Keep existing strict block if not overriding, but the above covers all cases now.
-          // Keep existing strict block if not overriding, but the above covers all cases now.
-          if (selectedCustomer) {
-            const cust = selectedCustomer!;
-            setVisitProblem({
-              title: 'أنت خارج النطاق الجغرافي المسموح',
-              reason: `موقعك الحالي يبعد مسافة (${Math.round(distanceMeters)} متر) عن موقع العميل المعتمد (${cust.customerName})، في حين أن الحد الأقصى المسموح للزيارة هو (${maxRadius} متر فقط).`,
-              solution: 'يرجى التواجد بالقرب من موقع العميل لإتمام الزيارة، أو التواصل مع مدير النظام لتصحيح إحداثيات العميل إذا كانت غير دقيقة.',
-              type: 'DISTANCE_EXCEEDED',
-              details: {
-                distanceMeters: Math.round(distanceMeters),
-                maxRadius,
-                currentCoords: { lat, lng },
-                customerCoords: { lat: cust.latitude, lng: cust.longitude },
-                customerName: cust.customerName,
-              },
-            });
-          }
-          return;
-        }
+      // تسجيل وتثبيت الزيارة محلياً في الـ Room DB مع الموقع الحقيقي وحالة المطابقة
+      const newVisit = offlineRoomDb.startVisit({
+        userId: currentUser.id,
+        customer: selectedCustomer,
+        deviceInstallationId: 'android_device_rep_app_2026',
+        lat,
+        lng,
+        accuracy,
+        provider,
+        isMock,
+        configThreshold: threshold,
+        visitedProducts,
+      });
+
+      newVisit.verificationStatus = verificationStatus;
+      newVisit.verificationReason = verificationReason;
+      newVisit.locationStatus = locationStatus;
+      newVisit.distanceMeters = Math.round(distanceMeters);
+
+      setActiveVisit(newVisit);
+      setNotes('');
+      loadLocalData();
+
+      if (isMatched) {
+        setSyncStatusMessage(`✓ تم تسجيل الموقع: زيارة (مطابقة) جغرافياً - المسافة: ${Math.round(distanceMeters)}م (ضمن نطاق ${allowedRadius}م)`);
+      } else {
+        setSyncStatusMessage(`⚠️ تم تسجيل الموقع: زيارة (غير مطابقة) جغرافياً - المسافة: ${Math.round(distanceMeters)}م (خارج نطاق ${allowedRadius}م)`);
       }
-
-      executeStartVisit(lat, lng, accuracy, provider, isMock);
+      setTimeout(() => setSyncStatusMessage(null), 5000);
     } catch (err: any) {
       setVisitProblem({
-        title: 'حدث خطأ غير متوقع في فحص الموقع',
+        title: 'حدث خطأ في فحص الموقع',
         reason: err?.message || 'تعذر التواصل مع مستشعر الموقع الجغرافي.',
-        solution: 'يرجى تحديث الصفحة أو فحص حالة الـ GPS في جهازك.',
+        solution: 'يرجى التأكد من تشغيل الـ GPS ثم النقر على زر إعادة الفحص والمحاولة.',
         type: 'ERROR',
       });
     } finally {
@@ -464,75 +396,27 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
     setVisitProblem(null);
 
     try {
-      // Direct hardware GPS inquiry
+      // التقاط الموقع الحقيقي عند إنهاء الزيارة
       const probe = await requestAndGetNativeLocation();
-      if (!probe.permissionGranted || !probe.servicesEnabled || probe.latitude === 0) {
-        setGpsEnabled(false);
-        const customerEnd = activeVisit ? offlineRoomDb.getCustomerById(activeVisit.customerId) : null;
-        const fallbackLatEnd = probe.latitude !== 0 ? probe.latitude : (customerEnd?.latitude || 0);
-        const fallbackLngEnd = probe.longitude !== 0 ? probe.longitude : (customerEnd?.longitude || 0);
+      let endLat = probe.latitude !== 0 ? probe.latitude : activeVisit.startLatitude;
+      let endLng = probe.longitude !== 0 ? probe.longitude : activeVisit.startLongitude;
+      let endAccuracy = probe.accuracy || activeVisit.startAccuracy || 10;
+      let endProvider = probe.provider;
+      let isMock = probe.isMockLocation;
 
-        setVisitProblem({
-          title: 'تعذر إنهاء الزيارة - الـ GPS معطل',
-          reason: probe.errorMessage || 'خدمات الموقع معطلة في الجهاز أو تعذرت الاستجابة.',
-          solution: 'يرجى تشغيل الـ GPS أو النقر على زر إنهاء الزيارة يدوياً أدناه.',
-          type: 'GPS_DISABLED',
-          allowOfflineOverride: true,
-          pendingOfflineParams: {
-            lat: fallbackLatEnd,
-            lng: fallbackLngEnd,
-            accuracy: probe.accuracy || 15,
-            provider: probe.latitude !== 0 ? probe.provider : 'manual_clinic_override_end',
-            isMock: false,
-          },
-          details: customerEnd ? {
-            customerName: customerEnd.customerName,
-            customerCoords: { lat: customerEnd.latitude, lng: customerEnd.longitude },
-            maxRadius: customerEnd.allowedVisitRadiusMeters || 30,
-          } : undefined,
-        });
-        return;
-      }
-
-      setGpsEnabled(true);
-      const lat = probe.latitude;
-      const lng = probe.longitude;
-      const accuracy = probe.accuracy;
-      const provider = probe.provider;
-      const isMock = probe.isMockLocation;
-
-      setSimulatedLat(lat);
-      setSimulatedLng(lng);
-      setSimulatedAccuracy(accuracy);
-
-      const customer = offlineRoomDb.getCustomerById(activeVisit.customerId);
-      if (customer) {
-        const distanceMeters = calculateHaversineDistanceMeters(lat, lng, customer.latitude, customer.longitude);
-        const maxRadius = customer.allowedVisitRadiusMeters || 30;
-        if (isOnline && distanceMeters > maxRadius) {
-          setVisitProblem({
-            title: 'أنت خارج النطاق عند إنهاء الزيارة',
-            reason: `المسافة الحالية عن العميل (${Math.round(distanceMeters)} متر) تتجاوز الحد الأقصى المسموح (${maxRadius} متر).`,
-            solution: 'يرجى التواجد داخل نطاق العميل لإنهاء الزيارة بنجاح.',
-            type: 'DISTANCE_EXCEEDED',
-            details: {
-              distanceMeters: Math.round(distanceMeters),
-              maxRadius,
-              currentCoords: { lat, lng },
-              customerCoords: { lat: customer.latitude, lng: customer.longitude },
-              customerName: customer.customerName,
-            },
-          });
-          return;
-        }
+      if (probe.latitude !== 0) {
+        setGpsReady(true);
+        setCurrentLiveLat(probe.latitude);
+        setCurrentLiveLng(probe.longitude);
+        setCurrentLiveAccuracy(probe.accuracy);
       }
 
       offlineRoomDb.endVisit({
         visitId: activeVisit.visitId,
-        lat,
-        lng,
-        accuracy,
-        provider,
+        lat: endLat || null,
+        lng: endLng || null,
+        accuracy: endAccuracy,
+        provider: endProvider,
         isMock,
         notes,
         visitOutcome: selectedOutcome,
@@ -545,6 +429,9 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
       setNotes('');
       setVisitedProducts([]);
       loadLocalData();
+
+      setSyncStatusMessage('تم إنهاء الزيارة وحفظها بنجاح!');
+      setTimeout(() => setSyncStatusMessage(null), 4000);
 
       // Trigger auto-sync if online
       if (isOnline) {
@@ -683,43 +570,47 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
 
       {/* Main Body */}
       <main className="flex-1 p-4 space-y-4 overflow-y-auto">
-        {/* GPS Control Panel (Testing Simulator) */}
+        {/* Real Native GPS Hardware Status Display (No disable toggle) */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
           <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2 font-semibold text-slate-300">
-              <Navigation className="w-4 h-4 text-cyan-400" />
-              <span>مستشعر GPS الحقيقي</span>
+            <div className="flex items-center gap-2 font-semibold text-slate-200">
+              <Navigation className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span>مستشعر GPS الحقيقي (Fused Provider)</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                gpsReady
+                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800/80'
+                  : 'bg-rose-950/80 text-rose-300 border border-rose-800/80'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${gpsReady ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                {gpsReady ? 'إشارة الأقمار الصناعية متصلة' : 'بانتظار إشارة الموقع'}
+              </span>
               <button
                 type="button"
                 onClick={checkRealGpsHardware}
-                className="text-[10px] text-cyan-400 underline hover:text-cyan-300 ml-1"
-                title="فحص حالة الـ GPS الحقيقي في الجهاز"
+                className="p-1 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors"
+                title="تحديث إشارة الـ GPS فوراً"
               >
-                (فحص الجهاز)
+                <RotateCw className="w-3.5 h-3.5" />
               </button>
             </div>
-            <button
-              onClick={() => setGpsEnabled(!gpsEnabled)}
-              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
-                gpsEnabled ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
-              }`}
-            >
-              {gpsEnabled ? 'مفعل (Fused)' : 'معطل'}
-            </button>
           </div>
 
-          {gpsEnabled ? (
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono tabular-nums bg-slate-950/70 p-2 rounded-xl border border-slate-800 text-slate-400">
-              <div>خط العرض: {simulatedLat.toFixed(4)}</div>
-              <div>خط الطول: {simulatedLng.toFixed(4)}</div>
-              <div>الدقة: {simulatedAccuracy} متر</div>
+          <div className="grid grid-cols-3 gap-2 text-[11px] font-mono tabular-nums bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 text-slate-300">
+            <div>
+              <span className="text-[10px] text-slate-500 block">خط العرض:</span>
+              <span className="text-cyan-400 font-bold">{currentLiveLat ? currentLiveLat.toFixed(5) : '---'}</span>
             </div>
-          ) : (
-            <div className="text-xs text-rose-400 bg-rose-950/40 p-2 rounded-xl border border-rose-900/50 flex items-center gap-2">
-              <AlertOctagon className="w-4 h-4 shrink-0" />
-              <span>خدمات الموقع معطلة. سيتم تسجيل الزيارة كـ GPS Unavailable.</span>
+            <div>
+              <span className="text-[10px] text-slate-500 block">خط الطول:</span>
+              <span className="text-cyan-400 font-bold">{currentLiveLng ? currentLiveLng.toFixed(5) : '---'}</span>
             </div>
-          )}
+            <div>
+              <span className="text-[10px] text-slate-500 block">دقة الإشارة:</span>
+              <span className="text-emerald-400 font-bold">{currentLiveAccuracy ? `±${currentLiveAccuracy}م` : '---'}</span>
+            </div>
+          </div>
         </div>
 
         {/* Active Visit Banner (Crash Recovery) */}
@@ -727,7 +618,7 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
           <div className="bg-gradient-to-r from-amber-950/80 to-slate-900 border-2 border-amber-500/50 rounded-2xl p-4 shadow-xl space-y-3 animate-pulse-subtle">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-md border border-amber-500/30">
-                زيارة جارية غير مكتملة
+                زيارة جارية قيد التوثيق
               </span>
               <span className="text-xs font-mono text-slate-400 tabular-nums">
                 بدأت: {new Date(activeVisit.startTimeDevice).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
@@ -744,6 +635,43 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
                 </div>
               </div>
             )}
+
+            {/* Real-time Location Matching Determination Card */}
+            <div className={`p-3 rounded-xl border flex items-start gap-2.5 text-xs ${
+              activeVisit.verificationStatus === 'ACCEPTED' || activeVisit.locationStatus === 'WITHIN_RADIUS'
+                ? 'bg-emerald-950/60 border-emerald-700/70 text-emerald-300'
+                : 'bg-amber-950/60 border-amber-700/70 text-amber-300'
+            }`}>
+              {activeVisit.verificationStatus === 'ACCEPTED' || activeVisit.locationStatus === 'WITHIN_RADIUS' ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-1 flex-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-sm">
+                    {activeVisit.verificationStatus === 'ACCEPTED' || activeVisit.locationStatus === 'WITHIN_RADIUS'
+                      ? 'نتيجة الفحص: زيارة مطابقة جغرافياً (ضمن النطاق)'
+                      : 'نتيجة الفحص: زيارة غير مطابقة جغرافياً (خارج النطاق)'}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+                    activeVisit.verificationStatus === 'ACCEPTED' || activeVisit.locationStatus === 'WITHIN_RADIUS'
+                      ? 'bg-emerald-900/80 text-emerald-200 border border-emerald-700'
+                      : 'bg-amber-900/80 text-amber-200 border border-amber-700'
+                  }`}>
+                    {activeVisit.verificationStatus === 'ACCEPTED' || activeVisit.locationStatus === 'WITHIN_RADIUS' ? 'مقبولة' : 'غير مقبولة'}
+                  </span>
+                </div>
+                <div className="text-[11px] font-mono tabular-nums opacity-90">
+                  المسافة المقاسة عند التسجيل: <strong className="underline">{activeVisit.distanceMeters ?? 0} متر</strong> (النطاق المسموح: {selectedCustomer?.allowedVisitRadiusMeters || 100} متر)
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono flex items-center gap-3 pt-0.5">
+                  <span>الموقع الحقيقي المسجل: {activeVisit.startLatitude?.toFixed(4)}, {activeVisit.startLongitude?.toFixed(4)}</span>
+                  <span>·</span>
+                  <span>موقع العميل: {selectedCustomer?.latitude.toFixed(4)}, {selectedCustomer?.longitude.toFixed(4)}</span>
+                </div>
+              </div>
+            </div>
 
             {/* Visit Outcomes Selector */}
             <div className="space-y-2 pt-2 border-t border-slate-800/80">
@@ -841,8 +769,9 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
                 type="text"
                 value={searchQuery}
                 onChange={e => {
-                  setSearchQuery(e.target.value);
-                  setCustomers(offlineRoomDb.getLocalCustomers(e.target.value, currentUser.assignedRegion));
+                  const val = e.target.value;
+                  setSearchQuery(val);
+                  loadLocalData(val, customerFilterTab);
                 }}
                 placeholder="ابحث باسم العميل، كود العميل (مثل 010001)، أو الهاتف..."
                 className="w-full bg-slate-900 border border-slate-800 rounded-xl pr-9 pl-3 py-2.5 text-xs text-slate-100 focus:border-cyan-500 focus:outline-none placeholder:text-slate-500"
@@ -888,7 +817,7 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
                 <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-400">حالة النطاق الجغرافي:</span>
-                    {gpsEnabled ? (
+                    {gpsReady ? (
                       <span className={`font-bold flex items-center gap-1 ${
                         isWithinRadius ? 'text-emerald-400' : 'text-amber-400'
                       }`}>
@@ -900,7 +829,7 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
                     )}
                   </div>
 
-                  {gpsEnabled && currentDistanceMeters !== null && (
+                  {gpsReady && currentDistanceMeters !== null && (
                     <div className="grid grid-cols-2 gap-2 text-xs font-mono tabular-nums bg-slate-900/80 p-2 rounded-lg">
                       <div>المسافة الفعلية: <span className="font-bold text-slate-200">{currentDistanceMeters}m</span></div>
                       <div>النطاق المسموح: <span className="font-bold text-slate-200">{selectedCustomer.allowedVisitRadiusMeters}m</span></div>
@@ -983,37 +912,99 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
             {/* Customers Master List */}
             {!selectedCustomer && (
               <div className="space-y-2">
+                {/* Tabs to toggle All vs Specifically Assigned vs In Territory */}
+                <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerFilterTab('ALL');
+                      loadLocalData(searchQuery, 'ALL');
+                    }}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-center font-bold transition-all text-[11px] ${
+                      customerFilterTab === 'ALL'
+                        ? 'bg-cyan-600 text-white shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    الكل المتاح
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerFilterTab('ASSIGNED_ONLY');
+                      loadLocalData(searchQuery, 'ASSIGNED_ONLY');
+                    }}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-center font-bold transition-all text-[11px] flex items-center justify-center gap-1 ${
+                      customerFilterTab === 'ASSIGNED_ONLY'
+                        ? 'bg-emerald-600 text-white shadow font-black'
+                        : 'text-emerald-400 hover:text-emerald-200'
+                    }`}
+                  >
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    <span>المسندون لي خصيصاً</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerFilterTab('TERRITORY');
+                      loadLocalData(searchQuery, 'TERRITORY');
+                    }}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-center font-bold transition-all text-[11px] ${
+                      customerFilterTab === 'TERRITORY'
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    نطاق منطقتي
+                  </button>
+                </div>
+
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-                  <span>العملاء المتاحون للزيارة ({customers.length})</span>
-                  <span>تحديث محلي تلقائي</span>
+                  <span>العملاء المعروضون للزيارة ({customers.length})</span>
+                  <span className="text-[11px] text-cyan-400 font-mono">مزامنة نشطة</span>
                 </div>
 
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                  {customers.map(cust => (
-                    <div
-                      key={cust.id}
-                      onClick={() => {
-                        setSelectedCustomer(cust);
-                        setSimulatedLat(cust.latitude); // Snap simulation near customer
-                        setSimulatedLng(cust.longitude);
-                      }}
-                      className="bg-slate-900 hover:bg-slate-800/80 border border-slate-800/80 hover:border-slate-700 rounded-xl p-3 cursor-pointer transition-all space-y-1"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-200 text-sm">{cust.customerName}</span>
-                        <span className="text-xs font-mono text-cyan-400 font-bold bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/50">
-                          {cust.customerCode}
-                        </span>
+                  {customers.map(cust => {
+                    const isDirectlyAssigned = isRepAssignedToCustomer(cust.assignedRepId, currentUser);
+                    return (
+                      <div
+                        key={cust.id}
+                        onClick={() => {
+                          setSelectedCustomer(cust);
+                        }}
+                        className={`bg-slate-900 hover:bg-slate-800/80 border rounded-xl p-3 cursor-pointer transition-all space-y-1.5 ${
+                          isDirectlyAssigned
+                            ? 'border-emerald-500/50 hover:border-emerald-400 shadow-sm shadow-emerald-950/40 bg-slate-900/90'
+                            : 'border-slate-800/80 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-slate-200 text-sm">{cust.customerName}</span>
+                          <span className="text-xs font-mono text-cyan-400 font-bold bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/50">
+                            {cust.customerCode}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 flex items-center justify-between">
+                          <span className="truncate max-w-[210px]">{cust.address}</span>
+                          {isDirectlyAssigned ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/80 shrink-0">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                              <span>مسند لك</span>
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700/80 shrink-0">
+                              نطاق منطقتك
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-400 flex items-center gap-2">
-                        <span>{cust.address}</span>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {customers.length === 0 && (
                     <div className="text-center py-8 text-xs text-slate-500 bg-slate-900/50 rounded-2xl border border-slate-800">
-                      لا يوجد عملاء يطابقون البحث في هذه المنطقة.
+                      لا يوجد عملاء يطابقون البحث في هذه القائمة.
                     </div>
                   )}
                 </div>
@@ -1330,23 +1321,6 @@ export const MobileAppView: React.FC<MobileAppViewProps> = ({ currentUser, onLog
 
             {/* Action Buttons */}
             <div className="space-y-2 pt-1">
-              {visitProblem.allowOfflineOverride && visitProblem.pendingOfflineParams && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const p = visitProblem.pendingOfflineParams!;
-                    if (!activeVisit) {
-                      executeStartVisit(p.lat, p.lng, p.accuracy, p.provider, p.isMock);
-                    } else {
-                      executeEndVisitWithParams(p.lat, p.lng, p.accuracy, p.provider, p.isMock);
-                    }
-                  }}
-                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl text-xs transition-colors shadow-lg shadow-amber-950/40 flex items-center justify-center gap-1.5"
-                >
-                  <MapPin className="w-4 h-4" />
-                  <span>{activeVisit ? 'إنهاء الزيارة يدوياً (أنا في عيادة الطبيب)' : 'أنا في عيادة الطبيب - بدء الزيارة يدوياً'}</span>
-                </button>
-              )}
 
               <button
                 type="button"

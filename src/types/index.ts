@@ -280,3 +280,69 @@ export interface DailyReportSummary {
   syncFailed: number;
   activeRepsCount: number;
 }
+
+/**
+ * Universal helper to determine if a customer or client is assigned to a specific representative,
+ * accounting for ID, username, full name, or legacy system codes.
+ */
+export function isRepAssignedToCustomer(
+  assignedRepId?: string,
+  repUser?: { id: string; username?: string; fullName?: string } | null
+): boolean {
+  if (!assignedRepId || assignedRepId.trim() === '' || !repUser) return false;
+  const assigned = assignedRepId.trim().toLowerCase();
+  const repId = (repUser.id || '').trim().toLowerCase();
+  const repUsername = (repUser.username || '').trim().toLowerCase();
+  const repFullName = (repUser.fullName || '').trim().toLowerCase();
+
+  // 1. Direct ID or Username match
+  if (assigned === repId || (repUsername && assigned === repUsername)) return true;
+
+  // 2. Full Name match or substring
+  if (repFullName && (assigned === repFullName || repFullName.includes(assigned) || assigned.includes(repFullName))) {
+    return true;
+  }
+
+  // 3. Known aliases and historical system codes
+  if (repUsername.includes('center') || repId === 'usr_rep_2') {
+    if (assigned.includes('khalid') || assigned.includes('الرميمة') || assigned.includes('center')) return true;
+  }
+  if (repUsername.includes('north') || repId === 'usr_rep_1') {
+    if (assigned.includes('hassan') || assigned.includes('الحداد') || assigned.includes('الحيمي') || assigned.includes('north')) return true;
+  }
+  if (repUsername.includes('south') || repId === 'usr_rep_3') {
+    if (assigned.includes('ali') || assigned.includes('الشعيبي') || assigned.includes('south')) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Robust region matching that accounts for slight wording differences
+ * (e.g., 'المنطقة الوسطى' vs 'المنطقة الوسطى (قطاع العمليات الأوسط)')
+ */
+export function isRegionMatch(
+  customerRegion?: string,
+  repRegion?: string,
+  repRegionIds?: string[]
+): boolean {
+  if (!repRegion || repRegion === 'الكل') return true;
+  if (!customerRegion) return true;
+
+  const cReg = customerRegion.trim().toLowerCase();
+  const rReg = repRegion.trim().toLowerCase();
+
+  if (cReg === rReg || rReg.includes(cReg) || cReg.includes(rReg)) return true;
+
+  // Keyword matching for Central, Northern, Southern
+  const isCentral = (s: string) => s.includes('وسط') || s.includes('center');
+  const isNorth = (s: string) => s.includes('شمال') || s.includes('north');
+  const isSouth = (s: string) => s.includes('جنوب') || s.includes('south');
+
+  if (isCentral(cReg) && isCentral(rReg)) return true;
+  if (isNorth(cReg) && isNorth(rReg)) return true;
+  if (isSouth(cReg) && isSouth(rReg)) return true;
+
+  return false;
+}
+

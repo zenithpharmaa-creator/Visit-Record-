@@ -6,7 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import { User, Customer, Visit, SyncQueueItem, AuditLog, AppConfiguration, Region, ProductItem, Client, Pharmacy, RolePermissionsMatrix, PermissionDefinition, UserRole, DoctorClass, RegionSection, BoundaryBasis, VerificationStatus, VisitVerificationResult } from '../types';
+import { User, Customer, Visit, SyncQueueItem, AuditLog, AppConfiguration, Region, ProductItem, Client, Pharmacy, RolePermissionsMatrix, PermissionDefinition, UserRole, DoctorClass, RegionSection, BoundaryBasis, VerificationStatus, VisitVerificationResult, isRepAssignedToCustomer, isRegionMatch } from '../types';
 
 const DB_FILE_PATH = fs.existsSync('/app/applet/server_database_store.json')
   ? '/app/applet/server_database_store.json'
@@ -1661,13 +1661,57 @@ class ServerDatabase {
     return user;
   }
 
+  // --- Representative ID Resolution Helper ---
+  public resolveRepId(repInput?: string): string {
+    if (!repInput || String(repInput).trim() === '') return '';
+    const clean = String(repInput).trim().toLowerCase();
+
+    // 1. Direct match with users by ID, username, or full name
+    const found = (this.store.users || []).find(
+      u =>
+        u.id.toLowerCase() === clean ||
+        u.username.toLowerCase() === clean ||
+        u.fullName.toLowerCase() === clean ||
+        u.fullName.toLowerCase().includes(clean)
+    );
+    if (found) return found.id;
+
+    // 2. Legacy codes from doctor import tables
+    if (clean.includes('khalid') || clean.includes('الرميمة') || clean.includes('center')) return 'usr_rep_2';
+    if (clean.includes('hassan') || clean.includes('الحداد') || clean.includes('الحيمي') || clean.includes('north')) return 'usr_rep_1';
+    if (clean.includes('ali') || clean.includes('الشعيبي') || clean.includes('south')) return 'usr_rep_3';
+
+    return repInput;
+  }
+
   // --- Customers Delta & CRUD ---
-  public getCustomersDelta(sinceVersion: number = 0, region?: string, repId?: string): Customer[] {
+  public getCustomersDelta(sinceVersion: number = 0, region?: string, repId?: string, user?: User): Customer[] {
+    const repUser = user || (repId ? this.store.users.find(u => u.id === repId) : undefined);
+
     return this.store.customers.filter(c => {
-      const matchVersion = c.version > sinceVersion;
-      const matchRegion = !region || region === 'الكل' || c.region === region;
-      const matchRep = !repId || c.assignedRepId === repId;
-      return matchVersion && matchRegion && matchRep;
+      // Version delta & deletion check
+      if (c.version <= sinceVersion) return false;
+      if (c.isDeleted) return false;
+
+      // If user is Admin or Sales Manager (no repId constraint), filter purely by region if specified
+      if (!repId || !repUser || repUser.role !== 'SALES_REP') {
+        if (!region || region === 'الكل') return true;
+        return isRegionMatch(c.region, region);
+      }
+
+      // 1. Explicitly assigned to this sales representative -> ALWAYS 100% VISIBLE!
+      if (isRepAssignedToCustomer(c.assignedRepId, repUser)) {
+        return true;
+      }
+
+      // 2. Unassigned customer within the sales rep's territory -> Visible for visit scheduling!
+      const isUnassigned = !c.assignedRepId || c.assignedRepId.trim() === '';
+      if (isUnassigned && isRegionMatch(c.region, repUser.assignedRegion, repUser.assignedRegionIds)) {
+        return true;
+      }
+
+      // Customer is assigned to another representative
+      return false;
     });
   }
 
@@ -1695,7 +1739,7 @@ class ServerDatabase {
       if (customerData.latitude !== undefined) existing.latitude = Number(customerData.latitude);
       if (customerData.longitude !== undefined) existing.longitude = Number(customerData.longitude);
       if (customerData.allowedVisitRadiusMeters !== undefined) existing.allowedVisitRadiusMeters = Number(customerData.allowedVisitRadiusMeters);
-      if (customerData.assignedRepId !== undefined) existing.assignedRepId = customerData.assignedRepId;
+      if (customerData.assignedRepId !== undefined) existing.assignedRepId = this.resolveRepId(customerData.assignedRepId);
       if (customerData.isActive !== undefined) existing.isActive = customerData.isActive;
       if (customerData.isDeleted !== undefined) existing.isDeleted = customerData.isDeleted;
 
@@ -1728,7 +1772,7 @@ class ServerDatabase {
         allowedVisitRadiusMeters: customerData.allowedVisitRadiusMeters !== undefined ? Number(customerData.allowedVisitRadiusMeters) : 100,
         isActive: customerData.isActive !== undefined ? Boolean(customerData.isActive) : true,
         isDeleted: false,
-        assignedRepId: customerData.assignedRepId || '',
+        assignedRepId: this.resolveRepId(customerData.assignedRepId || ''),
         createdAt: now,
         updatedAt: now,
         version: 1,
@@ -2435,11 +2479,28 @@ class ServerDatabase {
   // ==========================================
   // --- CLIENTS (العملاء - أطباء ومستشفيات) ---
   // ==========================================
-  public getAllClients(region?: string, repId?: string, doctorClass?: string): Client[] {
+  public getAllClients(region?: string, repId?: string, doctorClass?: string, user?: User): Client[] {
+    const repUser = user || (repId ? this.store.users.find(u => u.id === repId) : undefined);
+
     return (this.store.clients || []).filter(c => {
-      if (region && region !== 'الكل' && c.region !== region) return false;
-      if (repId && c.assignedRepId !== repId) return false;
       if (doctorClass && doctorClass !== 'الكل' && c.doctorClass !== doctorClass) return false;
+
+      // If queried for a sales representative
+      if (repId && repUser && repUser.role === 'SALES_REP') {
+        // 1. Explicitly assigned to this rep -> ALWAYS visible!
+        if (isRepAssignedToCustomer(c.assignedRepId, repUser)) return true;
+
+        // 2. Unassigned client in the rep's territory
+        const isUnassigned = !c.assignedRepId || c.assignedRepId.trim() === '';
+        if (isUnassigned && isRegionMatch(c.region, repUser.assignedRegion, repUser.assignedRegionIds)) {
+          return true;
+        }
+        return false;
+      }
+
+      // For Manager / Admin
+      if (region && region !== 'الكل' && !isRegionMatch(c.region, region)) return false;
+      if (repId && c.assignedRepId !== repId) return false;
       return true;
     });
   }
@@ -2463,11 +2524,10 @@ class ServerDatabase {
       if (data.phone !== undefined) existing.phone = data.phone;
       if (data.address !== undefined) existing.address = data.address;
       if (data.region !== undefined) existing.region = data.region;
-      if (data.assignedRepId !== undefined) existing.assignedRepId = data.assignedRepId;
-      else if ((data as any).assignedRep !== undefined) {
-        const repName = (data as any).assignedRep;
-        const rep = this.store.users.find(u => u.fullName === repName || u.username === repName);
-        if (rep) existing.assignedRepId = rep.id;
+      if (data.assignedRepId !== undefined) {
+        existing.assignedRepId = this.resolveRepId(data.assignedRepId);
+      } else if ((data as any).assignedRep !== undefined) {
+        existing.assignedRepId = this.resolveRepId((data as any).assignedRep);
       }
       if (data.latitude !== undefined) existing.latitude = Number(data.latitude);
       if (data.longitude !== undefined) existing.longitude = Number(data.longitude);
@@ -2498,7 +2558,7 @@ class ServerDatabase {
         phone: data.phone || '',
         address: data.address || '',
         region: data.region || 'المنطقة الوسطى',
-        assignedRepId: data.assignedRepId || '',
+        assignedRepId: this.resolveRepId(data.assignedRepId || (data as any).assignedRep || ''),
         latitude: Number(data.latitude) || 15.3533,
         longitude: Number(data.longitude) || 44.2045,
         allowedVisitRadiusMeters: Number(data.allowedVisitRadiusMeters) || 100,
@@ -2626,9 +2686,20 @@ class ServerDatabase {
   // ==========================================
   // --- PHARMACIES (الصيدليات) MANAGEMENT ---
   // ==========================================
-  public getAllPharmacies(region?: string, repId?: string): Pharmacy[] {
+  public getAllPharmacies(region?: string, repId?: string, user?: User): Pharmacy[] {
+    const repUser = user || (repId ? this.store.users.find(u => u.id === repId) : undefined);
+
     return (this.store.pharmacies || []).filter(p => {
-      if (region && region !== 'الكل' && p.region !== region) return false;
+      if (repId && repUser && repUser.role === 'SALES_REP') {
+        if (isRepAssignedToCustomer(p.assignedRepId, repUser)) return true;
+        const isUnassigned = !p.assignedRepId || p.assignedRepId.trim() === '';
+        if (isUnassigned && isRegionMatch(p.region, repUser.assignedRegion, repUser.assignedRegionIds)) {
+          return true;
+        }
+        return false;
+      }
+
+      if (region && region !== 'الكل' && !isRegionMatch(p.region, region)) return false;
       if (repId && p.assignedRepId !== repId) return false;
       return true;
     });
@@ -2647,11 +2718,10 @@ class ServerDatabase {
       if (data.phone) existing.phone = data.phone;
       if (data.address) existing.address = data.address;
       if (data.region) existing.region = data.region;
-      if (data.assignedRepId !== undefined) existing.assignedRepId = data.assignedRepId;
-      else if ((data as any).assignedRep !== undefined) {
-        const repName = (data as any).assignedRep;
-        const rep = this.store.users.find(u => u.fullName === repName || u.username === repName);
-        if (rep) existing.assignedRepId = rep.id;
+      if (data.assignedRepId !== undefined) {
+        existing.assignedRepId = this.resolveRepId(data.assignedRepId);
+      } else if ((data as any).assignedRep !== undefined) {
+        existing.assignedRepId = this.resolveRepId((data as any).assignedRep);
       }
       if (data.latitude !== undefined) existing.latitude = Number(data.latitude);
       if (data.longitude !== undefined) existing.longitude = Number(data.longitude);
@@ -2697,10 +2767,10 @@ class ServerDatabase {
         licenseNumber: data.licenseNumber || '',
         phone: data.phone || '',
         address: data.address || '',
-        region: data.region || 'القاهرة الكبرى',
-        assignedRepId: data.assignedRepId || '',
-        latitude: Number(data.latitude) || 30.0444,
-        longitude: Number(data.longitude) || 31.2357,
+        region: data.region || 'المنطقة الوسطى',
+        assignedRepId: this.resolveRepId(data.assignedRepId || (data as any).assignedRep || ''),
+        latitude: Number(data.latitude) || 15.3533,
+        longitude: Number(data.longitude) || 44.2045,
         allowedVisitRadiusMeters: Number(data.allowedVisitRadiusMeters) || 100,
         isActive: data.isActive !== undefined ? data.isActive : true,
         createdAt: now,
@@ -2722,6 +2792,7 @@ class ServerDatabase {
         latitude: newPharmacy.latitude,
         longitude: newPharmacy.longitude,
         allowedVisitRadiusMeters: newPharmacy.allowedVisitRadiusMeters,
+        assignedRepId: newPharmacy.assignedRepId,
         isActive: newPharmacy.isActive,
       }, actorId);
 

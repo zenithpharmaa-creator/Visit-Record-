@@ -5,7 +5,7 @@
  */
 
 import { Preferences } from '@capacitor/preferences';
-import { Customer, Visit, SyncQueueItem, AppConfiguration, AuditLog, LocationStatus, VerificationStatus } from '../types';
+import { Customer, Visit, SyncQueueItem, AppConfiguration, AuditLog, LocationStatus, VerificationStatus, isRegionMatch, isRepAssignedToCustomer } from '../types';
 import { calculateHaversineDistanceMeters, evaluateLocationStatus } from './haversine';
 import { nativeSQLiteEngine } from './sqliteEngine';
 
@@ -131,7 +131,7 @@ class OfflineRoomDatabase {
   public getLocalCustomers(searchQuery?: string, region?: string): Customer[] {
     return this.memoryCache.customers.filter(c => {
       if (c.isDeleted || !c.isActive) return false;
-      if (region && region !== 'الكل' && c.region !== region) return false;
+      if (region && region !== 'الكل' && !isRegionMatch(c.region, region)) return false;
       if (searchQuery) {
         const query = searchQuery.trim().toLowerCase();
         const matchName = c.customerName.toLowerCase().includes(query);
@@ -209,6 +209,15 @@ class OfflineRoomDatabase {
       params.configThreshold || 30
     );
 
+    const allowedRadius = params.customer.allowedVisitRadiusMeters || 100;
+    const isMatched = distanceMeters !== null && !isNaN(distanceMeters) && distanceMeters <= allowedRadius;
+    const verificationStatus: VerificationStatus = isMatched ? 'ACCEPTED' : 'REJECTED';
+    const verificationReason = isMatched
+      ? `مطابقة جغرافية صحيحة: المسافة الفعلية (${Math.round(distanceMeters!)} متر) تقع ضمن النطاق المعتمد (${allowedRadius} متر)`
+      : distanceMeters !== null
+        ? `خارج النطاق المسموح: المسافة الفعلية (${Math.round(distanceMeters!)} متر) تتجاوز النطاق المعتمد (${allowedRadius} متر)`
+        : 'تعذر التحقق من الموقع الجغرافي لعدم توفر إشارة GPS';
+
     const newVisit: Visit = {
       visitId,
       userId: params.userId,
@@ -232,6 +241,8 @@ class OfflineRoomDatabase {
 
       distanceMeters,
       locationStatus,
+      verificationStatus,
+      verificationReason,
       visitedProducts: params.visitedProducts || [],
       createdAt: now,
       updatedAt: now,
@@ -314,6 +325,11 @@ class OfflineRoomDatabase {
         visit.customerRadiusAtVisit,
         params.accuracy
       );
+      const isMatched = visit.distanceMeters !== null && !isNaN(visit.distanceMeters) && visit.distanceMeters <= visit.customerRadiusAtVisit;
+      visit.verificationStatus = isMatched ? 'ACCEPTED' : 'REJECTED';
+      visit.verificationReason = isMatched
+        ? `مطابقة جغرافية صحيحة: المسافة الفعلية (${Math.round(visit.distanceMeters!)} متر) تقع ضمن النطاق المعتمد (${visit.customerRadiusAtVisit} متر)`
+        : `خارج النطاق المسموح: المسافة الفعلية (${Math.round(visit.distanceMeters!)} متر) تتجاوز النطاق المعتمد (${visit.customerRadiusAtVisit} متر)`;
     }
 
     visit.state = 'PENDING_SYNC';
